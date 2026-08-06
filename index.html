@@ -1932,6 +1932,32 @@
                     oninput="App.ui.updateSerialConfig('generateCount', parseInt(this.value))" />
                 </div>
 
+                <div class="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5 space-y-2">
+                  <div class="flex items-center justify-between gap-3">
+                    <label for="serialShowTotal" class="flex items-center gap-2 text-xs font-medium text-slate-600 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        id="serialShowTotal"
+                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        onchange="App.ui.updateSerialConfig('showTotal', this.checked)" />
+                      显示序列总数
+                    </label>
+                    <span class="text-[10px] text-slate-400">例如 1/10</span>
+                  </div>
+
+                  <div id="serialTotalSeparatorWrapper" class="hidden flex items-center gap-2 pt-1 border-t border-slate-200">
+                    <label for="serialTotalSeparator" class="text-[11px] text-slate-500 whitespace-nowrap">分隔符</label>
+                    <input
+                      type="text"
+                      id="serialTotalSeparator"
+                      value="/"
+                      maxlength="5"
+                      class="w-14 compact-input border rounded text-center"
+                      oninput="App.ui.updateSerialConfig('totalSeparator', this.value)" />
+                    <span class="text-[11px] text-slate-400 whitespace-nowrap">预览 <span id="serialTotalPreviewDemo" class="font-medium text-slate-600">1/10</span></span>
+                  </div>
+                </div>
+
                 <div class="bg-gray-50 border border-gray-200 rounded p-2 text-[10px] text-red-700">
                   <i class="ph ph-info"></i>
                   <span id="serialPreviewText">预览: 1, 1, 2, 2, 3, 3...</span>
@@ -3519,7 +3545,7 @@
                 newRaw = obj.pageConfig.format.replace("{page}", currentPage).replace("{total}", totalPages);
                 hasNewData = true;
               } else if (obj.isSerialNumber && obj.serialConfig) {
-                newRaw = App.tools._calculateSerialNumber(obj.serialConfig, pageIndex);
+                newRaw = App.tools._formatSerialNumber(obj.serialConfig, pageIndex);
                 hasNewData = true;
               } else if (obj.isDynamicDate && obj.dateConfig) {
                 newRaw = Utils.formatDate(new Date(), null, obj.dateConfig);
@@ -5914,6 +5940,8 @@
               repeat: 1,
               changeType: "increment",
               generateCount: hasDataSource ? 1 : 10,
+              showTotal: false,
+              totalSeparator: "/",
             };
             this._addToCanvas(serialObj);
             App.ui.updateInspector();
@@ -5938,6 +5966,12 @@
             }
             const currentNumStr = String(currentNum).padStart(padLen, "0");
             return startStr.replace(regex, currentNumStr);
+          },
+
+          _formatSerialNumber: function (config, index) {
+            const serialNumber = this._calculateSerialNumber(config, index);
+            if (!config.showTotal) return serialNumber;
+            return serialNumber + (config.totalSeparator || "/") + config.generateCount;
           },
 
           replaceActiveImage: function (input) {
@@ -7422,10 +7456,12 @@
                   repeat: 1,
                   changeType: "increment",
                   generateCount: 10,
+                  showTotal: false,
+                  totalSeparator: "/",
                 };
               }
               if (!act.isBarcode) act.set("editable", false);
-              newValue = App.tools._calculateSerialNumber(act.serialConfig, App.state.currentDataIndex || 0);
+              newValue = App.tools._formatSerialNumber(act.serialConfig, App.state.currentDataIndex || 0);
             } else if (type === "date") {
               act.isDynamicDate = true;
               if (!act.dateConfig) {
@@ -7818,6 +7854,13 @@
                       ui("serialGenerateCount").val(cfg.generateCount || 10);
                     }
                   }
+                  ui("serialShowTotal").check(cfg.showTotal || false);
+                  const sepWrapper = document.getElementById("serialTotalSeparatorWrapper");
+                  if (sepWrapper) {
+                    sepWrapper.classList.toggle("hidden", !cfg.showTotal);
+                  }
+                  ui("serialTotalSeparator").val(cfg.totalSeparator || "/");
+                  this.updateSerialTotalPreviewDemo(cfg);
                   this.updateSerialPreview(cfg);
                 } else if (currentType === "date") {
                   ui("dateProps").show(true);
@@ -8077,12 +8120,30 @@
             if (!act || (!act.isSerialNumber && !act.isBarcode)) return;
             if (!act.serialConfig) return;
             act.serialConfig[key] = value;
+
+            if (key === "showTotal") {
+              const sepWrapper = document.getElementById("serialTotalSeparatorWrapper");
+              if (sepWrapper) {
+                sepWrapper.classList.toggle("hidden", !value);
+              }
+              this.updateSerialTotalPreviewDemo(act.serialConfig);
+            }
+            if (key === "totalSeparator") {
+              this.updateSerialTotalPreviewDemo(act.serialConfig);
+            }
+
             this.updateSerialPreview(act.serialConfig);
             if (key === "generateCount") {
               App.dataSource.updateNavUI();
+              if (act.serialConfig.showTotal) {
+                const currentIndex = App.state.currentDataIndex || 0;
+                let newText = App.tools._formatSerialNumber(act.serialConfig, currentIndex);
+                act.rawContent = newText;
+                App.content.render(act);
+              }
             } else {
               const currentIndex = App.state.currentDataIndex || 0;
-              const newText = App.tools._calculateSerialNumber(act.serialConfig, currentIndex);
+              let newText = App.tools._formatSerialNumber(act.serialConfig, currentIndex);
               act.rawContent = newText;
               App.content.render(act);
             }
@@ -8094,12 +8155,20 @@
             const preview = [];
             const previewCount = 6;
             for (let i = 0; i < previewCount; i++) {
-              preview.push(App.tools._calculateSerialNumber(config, i));
+              let text = App.tools._formatSerialNumber(config, i);
+              preview.push(text);
             }
 
             const previewText = preview.join(", ") + "...";
             const el = document.getElementById("serialPreviewText");
             if (el) el.innerText = "预览: " + previewText;
+          },
+
+          updateSerialTotalPreviewDemo: function (config) {
+            const el = document.getElementById("serialTotalPreviewDemo");
+            if (!el) return;
+            let sample = App.tools._formatSerialNumber(config, 0);
+            el.innerText = sample;
           },
           _getUIProxy: function () {
             return (id) => {
@@ -9709,7 +9778,7 @@
                   }
 
                   if (o.isSerialNumber && o.serialConfig) {
-                    const serialText = App.tools._calculateSerialNumber(o.serialConfig, dataIndex);
+                    const serialText = App.tools._formatSerialNumber(o.serialConfig, dataIndex);
                     o.rawContent = serialText;
                     if (!o.isBarcode) {
                       o.set("text", prefix + serialText + suffix);
