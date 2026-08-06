@@ -498,6 +498,14 @@
         font-display: swap;
       }
 
+      @font-face {
+        font-family: "SourceHanSansCN";
+        src: url("./static/NotoSansSC-VF.ttf") format("truetype");
+        font-weight: 100 900;
+        font-style: normal;
+        font-display: swap;
+      }
+
       /* ========================================= */
       /* 打印专用样式 */
       /* ========================================= */
@@ -700,6 +708,7 @@
               <select
                 id="floatFontFamily"
                 class="hidden">
+                <option value="SourceHanSansCN">思源黑体</option>
                 <option value="SourceHanSerifCN-Bold">思源宋体</option>
                 <option value="SimSun">宋体</option>
                 <option value="KaiTi">楷体</option>
@@ -1022,7 +1031,7 @@
                 <div class="flex items-center gap-2 flex-2" data-paper-types="ruled,grid,composition,english,music,tianzige,mizige,huizige,jiugongge,dots,triangle,hexagon">
                   <div class="flex-1">
                     <label class="compact-label">线条颜色</label>
-                    <input type="color" id="gridColor" value="#e11d48" class="h-7 w-full p-0 border-0 rounded cursor-pointer" oninput="App.paper.updateSettings()" />
+                    <input type="color" id="gridColor" value="#000000" class="h-7 w-full p-0 border-0 rounded cursor-pointer" oninput="App.paper.updateSettings()" />
                   </div>
                   <div class="w-16">
                     <label class="compact-label">线宽</label>
@@ -1734,6 +1743,7 @@
                     <label class="compact-label">字体</label>
                     <!-- 隐藏的 select 用于兼容原有逻辑 -->
                     <select id="propFont" class="hidden">
+                      <option value="SourceHanSansCN">思源黑体</option>
                       <option value="SourceHanSerifCN-Bold">思源宋体</option>
                       <option value="SimSun">宋体</option>
                       <option value="KaiTi">楷体</option>
@@ -1765,7 +1775,7 @@
                     </button>
                   </div>
                   <div class="flex-1 h-7 border rounded p-0.5 overflow-hidden flex items-center relative">
-                    <input type="color" id="propColor" oninput="App.ui.setProp('fill', this.value)" class="absolute -top-2 -left-2 w-[150%] h-20 cursor-pointer p-0 border-0" />
+                    <input type="color" id="propColor" value="#000000" oninput="App.ui.setProp('fill', this.value)" class="absolute -top-2 -left-2 w-[150%] h-20 cursor-pointer p-0 border-0" />
                   </div>
                 </div>
                 <div class="flex border rounded overflow-hidden flex-1">
@@ -2838,6 +2848,16 @@
 
           getFontBlob: async function (family) {
             if (this.fonts.has(family)) return this.fonts.get(family);
+            if (family === "SourceHanSansCN") {
+              try {
+                const res = await fetch("./static/NotoSansSC-VF.ttf");
+                const blob = await res.blob();
+                this.fonts.set(family, blob);
+                return blob;
+              } catch (e) {
+                console.warn("无法加载默认字体", e);
+              }
+            }
             if (family === "SourceHanSerifCN-Bold") {
               try {
                 const res = await fetch("./static/SourceHanSerifCN-Bold.ttf");
@@ -3938,7 +3958,7 @@
               label: "横线纸",
               rowCount: 20,
               strokeWidth: 1,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               doubleFirst: true,
               doubleLast: true,
               ruledClosed: false,
@@ -3947,7 +3967,7 @@
               label: "方格纸",
               gridColumns: 24,
               strokeWidth: 1,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               doubleBorder: true,
               gridDashed: false,
             },
@@ -3956,7 +3976,7 @@
               columnCount: 12,
               rowCount: 15,
               strokeWidth: 1,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               doubleBorder: true,
             },
             english: {
@@ -3974,7 +3994,7 @@
               staffGroupGap: 12,
               strokeWidth: 1,
               staffLineCount: 5,
-              gridColor: "#8a91a8",
+              gridColor: "#000000",
             },
             tianzige: {
               label: "田字格",
@@ -4015,7 +4035,7 @@
               label: "点阵纸",
               dotSpace: 5,
               dotSize: 0.5,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               marginTop: 0,
               marginBottom: 0,
               marginLeft: 0,
@@ -4026,7 +4046,7 @@
               label: "等距网格",
               geoSize: 10,
               strokeWidth: 1,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               marginTop: 0,
               marginBottom: 0,
               marginLeft: 0,
@@ -4035,7 +4055,7 @@
             hexagon: {
               label: "六边形网格",
               strokeWidth: 1,
-              gridColor: "#e11d48",
+              gridColor: "#000000",
               marginTop: 0,
               marginBottom: 0,
               marginLeft: 0,
@@ -4845,7 +4865,7 @@
                 marginLeft: 20,
                 marginRight: 20,
                 paperBgColor: "#ffffff",
-                gridColor: "#e11d48",
+                gridColor: "#000000",
                 strokeWidth: 1,
                 doubleFirst: false,
                 doubleLast: false,
@@ -4907,7 +4927,7 @@
               marginLeft: mmVal("marginLeft", 20) * CONFIG.MM_TO_PX,
               marginRight: mmVal("marginRight", 20) * CONFIG.MM_TO_PX,
               rowCount: intVal("rowCount", 20),
-              gridColor: val("gridColor", "#e11d48"),
+              gridColor: val("gridColor", "#000000"),
               strokeWidth: floatVal("strokeWidth", 1),
               doubleFirst: chk("doubleFirst"),
               paperOrientation: chk("paperOrientation"),
@@ -5506,8 +5526,8 @@
                   left: x,
                   top: y,
                   fontSize: Utils.pt2px(20),
-                  fontFamily: "SimHei",
-                  fill: "#666666",
+                  fontFamily: "SourceHanSansCN",
+                  fill: "#000000",
                   originX: "left",
                   originY: "top",
                 });
@@ -5705,8 +5725,8 @@
               new fabric.IText("双击编辑文本", {
                 ...this._getCenter(),
                 fontSize: Utils.pt2px(20),
-                fontFamily: "SimSun",
-                fill: App.paper.getSettings().gridColor,
+                fontFamily: "SourceHanSansCN",
+                fill: "#000000",
                 originY: "center",
                 originX: "left",
                 textAlign: "left",
@@ -5722,8 +5742,8 @@
               top: 100,
               width: App.state.baseWidth - Utils.mm2px(50),
               fontSize: Utils.pt2px(20),
-              fontFamily: "FangSong",
-              fill: "#333",
+              fontFamily: "SourceHanSansCN",
+              fill: "#000000",
               splitByGrapheme: true,
               lockScalingFlip: true,
               minWidth: 50,
@@ -5754,7 +5774,7 @@
                   left: App.state.baseWidth / 2,
                   top: App.state.baseHeight - Utils.mm2px(20),
                   originX: "center",
-                  font: "Arial",
+                  font: "SourceHanSansCN",
                   fill: "#000000",
                   size: 12,
                   editable: false,
@@ -5765,8 +5785,8 @@
                   left: App.state.baseWidth - cfg.marginRight,
                   top: Math.max(Utils.mm2px(5), cfg.marginTop - 35),
                   originX: "right",
-                  font: "KaiTi",
-                  fill: cfg.gridColor || "#000000",
+                  font: "SourceHanSansCN",
+                  fill: "#000000",
                   size: 14,
                   editable: true,
                 };
@@ -5804,8 +5824,8 @@
               left: App.state.baseWidth / 2,
               top: App.state.baseHeight - Utils.mm2px(20),
               fontSize: Utils.pt2px(20),
-              fontFamily: "SimSun",
-              fill: cfg.gridColor,
+              fontFamily: "SourceHanSansCN",
+              fill: "#000000",
               originX: "center",
               originY: "center",
               editable: false,
@@ -5927,8 +5947,8 @@
               left: App.state.baseWidth / 2,
               top: App.state.baseHeight / 2,
               fontSize: Utils.pt2px(20),
-              fontFamily: "Arial",
-              fill: "#333333",
+              fontFamily: "SourceHanSansCN",
+              fill: "#000000",
               originX: "center",
               originY: "center",
               editable: false,
@@ -6455,8 +6475,8 @@
             return {
               text: "",
               bg: "transparent",
-              textColor: "#0f172a",
-              fontFamily: "SourceHanSerifCN-Bold",
+              textColor: "#000000",
+              fontFamily: "SourceHanSansCN",
               fontSize: 14,
               align: "center",
               colspan: 1,
