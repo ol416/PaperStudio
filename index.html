@@ -2816,8 +2816,12 @@
             }
           });
           this.canvas.on("object:removed", (e) => {
-            if (App.history.locked) return;
             const target = e.target;
+            if (target?.__activeBlobUrl) {
+              URL.revokeObjectURL(target.__activeBlobUrl);
+              target.__activeBlobUrl = null;
+            }
+            if (App.history.locked) return;
             if (target && target.sharedId && target.syncMode === "share") {
               const sharedId = target.sharedId;
               const lastValue = App.content.compute(target);
@@ -2991,9 +2995,12 @@
 
         history: {
           stack: [],
+          stackSizes: [],
+          totalBytes: 0,
           index: -1,
           locked: false,
           maxSteps: 20,
+          maxBytes: 32 * 1024 * 1024,
 
           init: function () {
             const saveHandler = (e) => {
@@ -3021,6 +3028,8 @@
             if (App.state.paperType === "label" && App.state.label.mode === "preview") return;
             if (this.index < this.stack.length - 1) {
               this.stack = this.stack.slice(0, this.index + 1);
+              this.stackSizes = this.stackSizes.slice(0, this.index + 1);
+              this.totalBytes = this.stackSizes.reduce((total, size) => total + size, 0);
             }
 
             const json = App.canvas.toJSON(CUSTOM_PROPS);
@@ -3030,9 +3039,18 @@
               return;
             }
 
+            const currentSize = new TextEncoder().encode(currentStr).byteLength;
             this.stack.push(currentStr);
-            if (this.stack.length > this.maxSteps) this.stack.shift();
-            else this.index++;
+            this.stackSizes.push(currentSize);
+            this.totalBytes += currentSize;
+            // Image-heavy documents can make a full JSON snapshot several megabytes.
+            // Keep the newest state even when it alone exceeds the budget, while trimming
+            // older snapshots by both count and total memory use.
+            while (this.stack.length > 1 && (this.stack.length > this.maxSteps || this.totalBytes > this.maxBytes)) {
+              this.totalBytes -= this.stackSizes.shift();
+              this.stack.shift();
+            }
+            this.index = this.stack.length - 1;
             this.updateUI();
             App.state.hasUnsavedChanges = true;
             setTimeout(() => {
@@ -3044,6 +3062,8 @@
 
           reset: function () {
             this.stack = [];
+            this.stackSizes = [];
+            this.totalBytes = 0;
             this.index = -1;
             this.locked = false;
             this.saveState();
@@ -3432,7 +3452,9 @@
               s.headers.forEach((h) => {
                 const li = document.createElement("li");
                 li.className = "text-xs bg-white border border-gray-200 rounded px-2 py-1.5 text-slate-600 font-mono flex items-center gap-2";
-                li.innerHTML = `<i class="ph ph-brackets-curly text-slate-300"></i> ${h}`;
+                const icon = document.createElement("i");
+                icon.className = "ph ph-brackets-curly text-slate-300";
+                li.append(icon, document.createTextNode(` ${h}`));
                 li.draggable = true;
                 li.dataset.field = h;
                 li.dataset.sheet = s.currentSheet;
@@ -3664,6 +3686,7 @@
             obj._lastRenderedFile = filename;
             obj._imgLoaded = true;
             let blobUrl = null;
+            const previousBlobUrl = obj.__activeBlobUrl || null;
             if (filename && obj.imgDirId) {
               try {
                 const blob = await this.getImageBlob(filename, obj.imgDirId);
@@ -3687,20 +3710,26 @@
               const targetVisualWidth = obj.getScaledWidth();
               const { left, top, angle, originX, originY } = obj;
               obj.setSrc(blobUrl, (newImg) => {
-                newImg.set({
-                  left,
-                  top,
-                  angle,
-                  originX,
-                  originY,
-                });
-                if (newImg.width > 0) {
-                  const newScale = targetVisualWidth / newImg.width;
-                  newImg.scaleX = newScale;
-                  newImg.scaleY = newScale;
+                obj.__activeBlobUrl = blobUrl.startsWith("blob:") ? blobUrl : null;
+                try {
+                  newImg.set({
+                    left,
+                    top,
+                    angle,
+                    originX,
+                    originY,
+                  });
+                  if (newImg.width > 0) {
+                    const newScale = targetVisualWidth / newImg.width;
+                    newImg.scaleX = newScale;
+                    newImg.scaleY = newScale;
+                  }
+                } finally {
+                  if (previousBlobUrl && previousBlobUrl !== blobUrl) {
+                    URL.revokeObjectURL(previousBlobUrl);
+                  }
+                  resolve();
                 }
-
-                resolve();
               });
             });
           },
@@ -8513,10 +8542,11 @@
               div.innerHTML = `
                   <div class="flex items-center gap-2.5 overflow-hidden pointer-events-none flex-1">
                       <i class="ph ${icon} text-lg shrink-0 opacity-80"></i>
-                      <span class="truncate">${name}</span>
+                      <span class="truncate layer-item-label"></span>
                   </div>
                   ${deleteBtnHtml}
               `;
+              div.querySelector(".layer-item-label").textContent = String(name);
               if (!isLabelPreview) {
                 div.fabricObj = obj;
                 div.onclick = (e) => {
