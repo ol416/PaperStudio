@@ -2698,6 +2698,9 @@
             uniScaleKey: "shiftKey",
             objectCaching: false,
             noScaleCache: false,
+            // Keep outlines and dash patterns in document units when an object is stretched.
+            // Fabric otherwise applies scaleX/scaleY to both, causing uneven line widths and dashes.
+            strokeUniform: true,
           });
           const rotateImg = new Image();
           rotateImg.src = "./static/rotate.png";
@@ -2802,6 +2805,14 @@
             if (target && target.__corner !== target._lastHoveredCorner) {
               target._lastHoveredCorner = target.__corner;
               this.canvas.requestRenderAll();
+            }
+          });
+          // Older projects serialize Fabric's previous `strokeUniform: false` default.
+          // Upgrade objects as they enter the canvas so reopening an existing project has
+          // the same fixed-width outline and fixed dash spacing behavior as new objects.
+          this.canvas.on("object:added", ({ target }) => {
+            if (target && !target.isGrid && !target.strokeUniform) {
+              target.set("strokeUniform", true);
             }
           });
           this.canvas.on("object:removed", (e) => {
