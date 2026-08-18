@@ -8976,7 +8976,7 @@
               })
               .join(""),
               
-          _createPrintIframe: function (content, css = "") {
+          _createPrintIframe: function (css = "") {
             const id = "print-iframe-sandbox";
             let f = document.getElementById(id);
             if (f) f.remove();
@@ -8987,9 +8987,21 @@
             const doc = f.contentWindow.document;
             doc.open();
             doc.write(
-              `<html><head><style>@page{size:${App.state.currentPaper.w}mm ${App.state.currentPaper.h}mm;margin:0}body{margin:0;display:flex;justify-content:center}${css}</style></head><body>${content}</body></html>`,
+              `<html><head><style>@page{size:${App.state.currentPaper.w}mm ${App.state.currentPaper.h}mm;margin:0}body{margin:0;display:flex;justify-content:center}${css}</style></head><body></body></html>`,
             );
             doc.close();
+            return f;
+          },
+
+          _appendPrintPage: function (doc, svg, w, h) {
+            const page = doc.createElement("div");
+            page.style.cssText = `position:relative;width:${w}mm;height:${h}mm;overflow:hidden;break-after:page;page-break-after:always;`;
+            const parsedSvg = new DOMParser().parseFromString(svg, "image/svg+xml");
+            if (parsedSvg.documentElement.nodeName === "parsererror") {
+              throw new Error("打印页面 SVG 解析失败");
+            }
+            page.appendChild(doc.importNode(parsedSvg.documentElement, true));
+            doc.body.appendChild(page);
           },
 
            _getExportCanvas: async function () {
@@ -9064,8 +9076,10 @@
             const originalLabelPage = App.state.label.previewPage || 0;
             const loopCount = shouldBatch ? totalPages : 1;
             const { w, h } = App.state.currentPaper;
-            let allPagesHtml = "";
             try {
+              const css = this._getFontCss() + " body { display: block !important; margin: 0; } @page { margin: 0; }";
+              const printFrame = this._createPrintIframe(css);
+              const printDoc = printFrame.contentWindow.document;
               for (let i = 0; i < loopCount; i++) {
                 if (shouldBatch) {
                   if (isLabelPreview || isLabelDesign) {
@@ -9090,16 +9104,13 @@
                   },
                 });
                 vC.dispose();
-                allPagesHtml += `
-        <div style="position: relative; width: ${w}mm; height: ${h}mm; overflow: hidden; break-after: page; page-break-after: always;">
-          ${svg}
-        </div>
-      `;
+                this._appendPrintPage(printDoc, svg, w, h);
               }
 
-              allPagesHtml += `<script>setTimeout(() => { window.print(); }, 500);<\/script>`;
-              const css = this._getFontCss() + " body { display: block !important; margin: 0; } @page { margin: 0; }";
-              this._createPrintIframe(allPagesHtml, css);
+              await new Promise((resolve) => {
+                printFrame.contentWindow.requestAnimationFrame(() => printFrame.contentWindow.requestAnimationFrame(resolve));
+              });
+              printFrame.contentWindow.print();
             } catch (e) {
               console.error(e);
               Utils.toast("打印生成失败: " + e.message, "error");
