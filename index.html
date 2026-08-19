@@ -541,7 +541,7 @@
 
   <body class="bg-gray-50 h-screen flex flex-col text-slate-700 font-sans overflow-hidden">
     <div id="welcomeModal" class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop transition-opacity duration-300">
-      <div class="bg-white w-[850px] h-[550px] rounded-2xl shadow-2xl flex overflow-hidden">
+      <div class="bg-white w-[850px] h-[590px] rounded-2xl shadow-2xl flex overflow-hidden">
         <div class="w-1/3 bg-slate-900 text-white p-8 flex flex-col justify-between relative overflow-hidden">
           <div class="relative z-10">
             <div class="flex items-center gap-3 mb-8">
@@ -574,7 +574,18 @@
           <i class="ph ph-scroll absolute -bottom-5 -right-10 text-[200px] text-slate-800 opacity-50 rotate-12"></i>
         </div>
         <div class="w-2/3 p-8 bg-gray-50 flex flex-col">
-          <h2 class="text-lg font-bold text-slate-800 mb-4 flex justify-between items-center">从模板开始</h2>
+          <div class="mb-3 flex items-center justify-between gap-2">
+            <h2 class="text-lg font-bold text-slate-800">从模板开始</h2>
+            <div class="flex items-center gap-1">
+              <button onclick="App.templates.saveCurrent()" class="px-2 py-1 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50" title="保存当前设计为本地模板"><i class="ph ph-bookmark-simple"></i> 保存模板</button>
+              <button onclick="document.getElementById('templatePackImportInput').click()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导入模板包"><i class="ph ph-upload-simple"></i></button>
+              <button onclick="App.templates.exportLocal()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导出本地模板"><i class="ph ph-download-simple"></i></button>
+            </div>
+          </div>
+          <div class="relative mb-3">
+            <i class="ph ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
+            <input id="templateSearchInput" oninput="App.templates.setQuery(this.value)" class="w-full rounded-lg border border-gray-200 bg-white py-2 pl-8 pr-3 text-xs focus:border-red-400 focus:outline-none" placeholder="搜索模板名称或标签" />
+          </div>
           <div id="templateGrid" class="grid grid-cols-2 gap-4 overflow-y-auto pr-2 custom-scrollbar"></div>
         </div>
       </div>
@@ -825,6 +836,7 @@
     </div>
 
     <input type="file" id="projectImportInput" hidden accept=".paper" />
+    <input type="file" id="templatePackImportInput" hidden accept=".paper-templates.json,application/json" />
     <input type="file" id="imgUpload" hidden accept="image/*" />
     <input type="file" id="imgReplaceInput" hidden accept="image/*" />
 
@@ -5596,6 +5608,10 @@
             bindInput("projectImportInput", function () {
               App.io.loadProject(this.files[0]);
             });
+            bindInput("templatePackImportInput", function () {
+              App.templates.importLocal(this.files[0]);
+              this.value = "";
+            });
             bindInput("imgReplaceInput", function () {
               App.tools.replaceActiveImage(this);
             });
@@ -9952,28 +9968,232 @@
         
         templates: {
           data: [],
+          localData: [],
+          query: "",
+          storageKey: "paperstudio:local-templates:v1",
           init: async function () {
             try {
-              this.data = await (await fetch("./templates/templates.json")).json();
-              const grid = document.getElementById("templateGrid");
-              if (grid) {
-                grid.innerHTML = "";
-                this.data.forEach((t) => {
-                  const d = document.createElement("div");
-                  d.className = "template-card bg-white p-3 rounded-xl border border-gray-200 cursor-pointer transition flex flex-col gap-2";
-                  d.innerHTML = `<div class="h-36 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center border border-gray-100">${
-                    t.thumbnail ? `<img src="${t.thumbnail}" class="h-full w-auto object-contain">` : '<i class="ph ph-file-plus text-3xl text-gray-300"></i>'
-                  }</div><div><h3 class="font-bold text-slate-700 text-sm">${t.name}</h3><p class="text-slate-400 text-xs">${t.desc || "无描述"}</p></div>`;
-                  d.onclick = () => this.load(t.id);
-                  grid.appendChild(d);
-                });
-              }
+              const [builtInTemplates, localTemplates] = await Promise.all([
+                fetch("./templates/templates.json").then((response) => response.json()),
+                idbKeyval.get(this.storageKey),
+              ]);
+              this.data = Array.isArray(builtInTemplates) ? builtInTemplates : [];
+              this.localData = Array.isArray(localTemplates) ? localTemplates : [];
+              this.render();
             } catch {
               Utils.toast("模板加载失败", "error");
             }
           },
 
+          setQuery: function (query) {
+            this.query = String(query || "").trim().toLowerCase();
+            this.render();
+          },
+
+          _matchesQuery: function (template) {
+            if (!this.query) return true;
+            return [template.name, template.desc, ...(template.tags || [])].some((value) => String(value || "").toLowerCase().includes(this.query));
+          },
+
+          _createCard: function (template, isLocal = false) {
+            const card = document.createElement("div");
+            card.className = "template-card relative bg-white p-3 rounded-xl border border-gray-200 cursor-pointer transition hover:border-red-300 hover:shadow-sm flex flex-col gap-2";
+            const preview = document.createElement("div");
+            preview.className = "h-36 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center border border-gray-100";
+            if (template.thumbnail && String(template.thumbnail).startsWith("data:image/")) {
+              const image = document.createElement("img");
+              image.src = template.thumbnail;
+              image.className = "h-full w-auto object-contain";
+              image.alt = "模板缩略图";
+              preview.appendChild(image);
+            } else {
+              const icon = document.createElement("i");
+              icon.className = "ph ph-file-plus text-3xl text-gray-300";
+              preview.appendChild(icon);
+            }
+            const info = document.createElement("div");
+            const title = document.createElement("h3");
+            title.className = "font-bold text-slate-700 text-sm truncate";
+            title.textContent = template.name || "未命名模板";
+            const desc = document.createElement("p");
+            desc.className = "text-slate-400 text-xs line-clamp-2 min-h-[2.5em]";
+            desc.textContent = template.desc || "无描述";
+            info.append(title, desc);
+            if (isLocal && template.tags?.length) {
+              const tags = document.createElement("div");
+              tags.className = "mt-1 flex flex-wrap gap-1";
+              template.tags.forEach((tag) => {
+                const chip = document.createElement("span");
+                chip.className = "rounded bg-red-50 px-1.5 py-0.5 text-[10px] text-red-600";
+                chip.textContent = tag;
+                tags.appendChild(chip);
+              });
+              info.appendChild(tags);
+            }
+            card.append(preview, info);
+            card.onclick = () => this.load(template.id);
+            if (isLocal) {
+              const remove = document.createElement("button");
+              remove.className = "absolute right-4 top-4 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-slate-400 shadow hover:text-red-600";
+              remove.title = "删除本地模板";
+              remove.innerHTML = '<i class="ph ph-trash"></i>';
+              remove.onclick = (event) => {
+                event.stopPropagation();
+                this.removeLocal(template.id);
+              };
+              card.appendChild(remove);
+            }
+            return card;
+          },
+
+          render: function () {
+            const grid = document.getElementById("templateGrid");
+            if (!grid) return;
+            grid.innerHTML = "";
+            const appendSection = (title, templates, isLocal) => {
+              if (!templates.length) return;
+              const heading = document.createElement("div");
+              heading.className = "col-span-2 pt-1 text-xs font-bold text-slate-500";
+              heading.textContent = title;
+              grid.appendChild(heading);
+              templates.forEach((template) => grid.appendChild(this._createCard(template, isLocal)));
+            };
+            const local = this.localData.filter((template) => this._matchesQuery(template));
+            const builtIn = this.data.filter((template) => this._matchesQuery(template));
+            appendSection("本地模板", local, true);
+            appendSection("内置模板", builtIn, false);
+            if (!local.length && !builtIn.length) {
+              const empty = document.createElement("p");
+              empty.className = "col-span-2 py-12 text-center text-xs text-slate-400";
+              empty.textContent = "未找到匹配的模板";
+              grid.appendChild(empty);
+            }
+          },
+
+          _persistLocal: async function () {
+            await idbKeyval.set(this.storageKey, this.localData);
+          },
+
+          _createProjectSnapshot: function () {
+            const settings = App.paper.getSettings();
+            const fitLabelEl = document.getElementById("fitLabelSize");
+            if (fitLabelEl?.checked && settings.type === "label") {
+              const value = (id) => parseFloat(document.getElementById(id)?.value) || 0;
+              const integer = (id) => parseInt(document.getElementById(id)?.value) || 1;
+              settings.fitLabelSize = true;
+              settings.marginTop = value("marginTop") * CONFIG.MM_TO_PX;
+              settings.marginBottom = value("marginBottom") * CONFIG.MM_TO_PX;
+              settings.marginLeft = value("marginLeft") * CONFIG.MM_TO_PX;
+              settings.marginRight = value("marginRight") * CONFIG.MM_TO_PX;
+              settings.labelGapH = value("labelGapH");
+              settings.labelGapV = value("labelGapV");
+              settings.labelCols = integer("labelCols");
+              settings.labelRows = integer("labelRows");
+            }
+            const canvasData = App.state.paperType === "label" && App.state.label.mode === "preview"
+              ? (typeof App.state.label.designContent === "string" ? JSON.parse(App.state.label.designContent) : App.state.label.designContent)
+              : App.canvas.toJSON(CUSTOM_PROPS);
+            canvasData.objects = (canvasData.objects || []).filter((object) => !object.isGrid);
+            canvasData.objects.forEach((object) => {
+              if (object.type === "image" && object.dataBinding && String(object.src || "").startsWith("blob:")) object.src = "";
+            });
+            return {
+              version: "4.2",
+              timestamp: new Date().toISOString(),
+              settings,
+              paperSize: document.getElementById("paperSize").value,
+              thumbnail: App.canvas.toDataURL({ format: "png", multiplier: 0.5 }),
+              canvasData,
+              dataSource: null,
+            };
+          },
+
+          saveCurrent: async function () {
+            const name = window.prompt("模板名称", "未命名模板");
+            if (name === null) return;
+            const tagsInput = window.prompt("标签（用逗号分隔，可留空）", "");
+            if (tagsInput === null) return;
+            try {
+              const project = this._createProjectSnapshot();
+              this.localData.unshift({
+                id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                name: String(name).trim() || "未命名模板",
+                desc: "本地保存的模板",
+                tags: [...new Set(String(tagsInput).split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))],
+                thumbnail: project.thumbnail,
+                project,
+                updatedAt: new Date().toISOString(),
+              });
+              await this._persistLocal();
+              this.render();
+              Utils.toast("本地模板已保存", "success");
+            } catch (error) {
+              console.error(error);
+              Utils.toast("保存模板失败", "error");
+            }
+          },
+
+          removeLocal: async function (id) {
+            const template = this.localData.find((item) => item.id === id);
+            if (!template || !window.confirm(`确定删除模板“${template.name}”吗？`)) return;
+            this.localData = this.localData.filter((item) => item.id !== id);
+            await this._persistLocal();
+            this.render();
+            Utils.toast("本地模板已删除");
+          },
+
+          exportLocal: function () {
+            if (!this.localData.length) return Utils.toast("没有可导出的本地模板", "info");
+            const blob = new Blob([JSON.stringify({ format: "PaperStudioTemplatePack", version: 1, templates: this.localData })], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `PaperStudio模板_${Date.now()}.paper-templates.json`;
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+          },
+
+          importLocal: async function (file) {
+            if (!file) return;
+            try {
+              const pack = JSON.parse(await file.text());
+              if (pack.format !== "PaperStudioTemplatePack" || !Array.isArray(pack.templates)) throw new Error("无效的模板包");
+              const imported = pack.templates
+                .filter((template) => template && template.project?.canvasData && template.project?.settings)
+                .map((template) => ({
+                  id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                  name: String(template.name || "未命名模板").slice(0, 100),
+                  desc: String(template.desc || "本地导入的模板").slice(0, 300),
+                  tags: [...new Set((Array.isArray(template.tags) ? template.tags : []).map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20))],
+                  thumbnail: String(template.thumbnail || "").startsWith("data:image/") ? template.thumbnail : "",
+                  project: template.project,
+                  updatedAt: new Date().toISOString(),
+                }));
+              if (!imported.length) throw new Error("模板包中没有有效模板");
+              this.localData.unshift(...imported);
+              await this._persistLocal();
+              this.render();
+              Utils.toast(`已导入 ${imported.length} 个本地模板`, "success");
+            } catch (error) {
+              console.error(error);
+              Utils.toast("模板包导入失败", "error");
+            }
+          },
+
           load: async function (id) {
+            const localTemplate = this.localData.find((template) => template.id === id);
+            if (localTemplate) {
+              App.ui.showLoading("加载本地模板...");
+              try {
+                await App.dataSource.close();
+                App.io.loadProjectData(localTemplate.project);
+              } catch (error) {
+                console.error(error);
+                App.ui.hideLoading();
+                Utils.toast("加载本地模板失败", "error");
+              }
+              return;
+            }
             if (id === "blank_a4" || !this.data.find((i) => i.id === id)?.url) {
               App.dataSource.close();
               App.ui.showLoading("创建中...");
