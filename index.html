@@ -173,6 +173,15 @@
         font-size: 13px;
       }
 
+      /* 导出按钮：主按钮单击打印，箭头按钮点击展开导出菜单（不使用 hover） */
+      .dropdown.export-dropdown:hover > .dropdown-menu {
+        display: none;
+      }
+
+      .dropdown.export-dropdown.open > .dropdown-menu {
+        display: block;
+      }
+
       /* 表格编辑器 */
       .table-editor-grid {
         border-collapse: collapse;
@@ -1012,9 +1021,12 @@
         <button onclick="App.ui.toggleFullScreen()" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="全屏模式">
           <i id="fsIcon" class="ph ph-corners-out text-lg"></i>
         </button>
-        <div class="relative dropdown">
-          <button class="flex items-center gap-1 px-3 py-1.5 rounded bg-white border border-red-200 text-red-600 hover:bg-red-50 shadow-sm transition" title="导出">
-            <i class="ph ph-export text-lg"></i> 导出 <i class="ph ph-caret-down text-xs"></i>
+        <div class="relative dropdown export-dropdown flex">
+          <button onclick="App.io.print()" class="flex items-center gap-1 px-3 py-1.5 rounded-l bg-white border border-red-200 text-red-600 hover:bg-red-50 shadow-sm transition" title="单击打印 (Ctrl+P)">
+            <i class="ph ph-printer text-lg"></i> 打印
+          </button>
+          <button onclick="App.ui.toggleExportMenu(event)" class="flex items-center justify-center px-1.5 py-1.5 rounded-r bg-white border border-l-0 border-red-200 text-red-600 hover:bg-red-50 shadow-sm transition" title="导出 PDF / PNG / SVG">
+            <i class="ph ph-caret-down text-xs"></i>
           </button>
           <div class="dropdown-menu export-menu">
             <button onclick="App.io.exportPDF()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
@@ -1025,10 +1037,6 @@
             </button>
             <button onclick="App.io.exportSVG()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
               <i class="ph ph-file-svg text-lg"></i> 导出 SVG
-            </button>
-            <div class="h-px bg-gray-200 my-1"></div>
-            <button onclick="App.io.print()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
-              <i class="ph ph-printer text-lg"></i> 打印 <span class="ml-auto text-[10px] text-gray-400">Ctrl+P</span>
             </button>
           </div>
         </div>
@@ -8971,6 +8979,22 @@
           showModal: (id) => document.getElementById(id).classList.remove("hidden"),
           hideModal: (id) => document.getElementById(id).classList.add("hidden"),
 
+          toggleExportMenu: function (e) {
+            if (e && e.stopPropagation) e.stopPropagation();
+            const el = document.querySelector(".export-dropdown");
+            if (!el) return;
+            el.classList.toggle("open");
+            if (el.classList.contains("open")) {
+              const close = (ev) => {
+                if (!el.contains(ev.target) || (ev.target.closest && ev.target.closest(".export-menu button"))) {
+                  el.classList.remove("open");
+                  document.removeEventListener("click", close, true);
+                }
+              };
+              setTimeout(() => document.addEventListener("click", close, true), 0);
+            }
+          },
+
           align: function (mode) {
             const activeObj = App.canvas.getActiveObject();
             const queue = App.state.selectionQueue;
@@ -10386,7 +10410,7 @@
 
           removeLocal: async function (id) {
             const template = this.localData.find((item) => item.id === id);
-            if (!template || !window.confirm(`确定删除模板“${template.name}”吗？`)) return;
+            if (!template || !window.confirm(`确定删除模板"${template.name}"吗？`)) return;
             this.localData = this.localData.filter((item) => item.id !== id);
             this.selected.delete(id);
             await this._persistLocal();
@@ -10459,7 +10483,7 @@
                 added.push(template);
                 continue;
               }
-              if (window.confirm(`模板“${template.name}”已存在，是否覆盖？`)) {
+              if (window.confirm(`模板"${template.name}"已存在，是否覆盖？`)) {
                 const existing = this.localData.find((item) => item.name === template.name) || added.find((item) => item.name === template.name);
                 if (existing) {
                   Object.assign(existing, {
