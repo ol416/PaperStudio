@@ -17,7 +17,6 @@
     <script src="./static/xlsx.full.min.js"></script>
     <script src="./static/idb-keyval.umd.js"></script>
     <script src="./static/bwip-js.min.js"></script>
-    <link rel="preload" href="./static/SourceHanSerifCN-Bold.ttf" as="font" type="font/ttf" crossorigin />
     <style>
       /* 基础滚动条隐藏 */
       .no-scrollbar::-webkit-scrollbar {
@@ -2966,6 +2965,12 @@
             }
             setTimeout(() => App.dataSource && App.dataSource.refreshBindingState(), 100);
           });
+          if (document.fonts && typeof document.fonts.addEventListener === "function") {
+            // 字体（内置或本地）稍后加载完成时，刷新画布避免字形/度量回退
+            document.fonts.addEventListener("loadingdone", () => {
+              if (App.canvas) App.canvas.requestRenderAll();
+            });
+          }
           this.paper.init();
           this.ruler.init();
           this.history.init();
@@ -2980,7 +2985,20 @@
 
         fontManager: {
           fonts: new Map(),
-          availableFonts:[],
+          availableFonts: [],
+
+          ensureBundledFont: async function (family) {
+            if (family !== "SourceHanSansCN" && family !== "SourceHanSerifCN-Bold") return;
+            if (!document.fonts || typeof document.fonts.load !== "function") return;
+            try {
+              // 内置字体改为按需加载：仅在设计中实际用到时才下载，
+              // 加载完成后由 App.init 里的 loadingdone 监听器触发画布重绘。
+              const weight = family === "SourceHanSansCN" ? "400" : "normal";
+              await document.fonts.load(`${weight} 16px "${family}"`);
+            } catch (e) {
+              console.warn("内置字体加载失败:", family, e);
+            }
+          },
 
           queryLocalFonts: async function () {
             if (!("queryLocalFonts" in window)) return[];
@@ -8012,6 +8030,9 @@
                 act.type === "activeSelection" ? act.forEachObject((o) => o.set(key, val)) : act.set(key, val);
               }
 
+              if (key === "fontFamily") {
+                App.fontManager.ensureBundledFont(val).then(() => App.canvas.requestRenderAll());
+              }
               App.canvas.requestRenderAll();
               App.history.saveState();
               App.ui.updateGeo(null, null, act);
@@ -9833,6 +9854,22 @@
                     App.content.render(o);
                   }
                 });
+                const fontFamilies = new Set();
+                App.canvas.getObjects().forEach((o) => {
+                  if (["i-text", "textbox", "text"].includes(o.type) && o.fontFamily) {
+                    fontFamilies.add(o.fontFamily);
+                  }
+                  if (o.isTable && o.tableData && o.tableData.cells) {
+                    o.tableData.cells.flat().forEach((cell) => {
+                      if (cell && cell.fontFamily) fontFamilies.add(cell.fontFamily);
+                    });
+                  }
+                });
+                if (fontFamilies.size) {
+                  Promise.all([...fontFamilies].map((f) => App.fontManager.ensureBundledFont(f))).then(() =>
+                    App.canvas.requestRenderAll(),
+                  );
+                }
                 App.history.reset();
                 App.state.hasUnsavedChanges = !!opts.markUnsaved;
                 App.ui.hideLoading();
@@ -10389,11 +10426,27 @@
             card.className = "template-card relative bg-white p-3 rounded-xl border border-gray-200 cursor-pointer transition hover:border-red-300 hover:shadow-sm flex flex-col gap-2";
             const preview = document.createElement("div");
             preview.className = "h-36 bg-gray-50 rounded-lg overflow-hidden flex items-center justify-center border border-gray-100";
-            if (template.thumbnail && String(template.thumbnail).startsWith("data:image/")) {
+            const thumbnailSrc = template.thumbnail && String(template.thumbnail);
+            const hasThumbnail =
+              thumbnailSrc &&
+              (thumbnailSrc.startsWith("data:image/") ||
+                thumbnailSrc.startsWith("./") ||
+                thumbnailSrc.startsWith("/") ||
+                thumbnailSrc.startsWith("http://") ||
+                thumbnailSrc.startsWith("https://"));
+            if (hasThumbnail) {
               const image = document.createElement("img");
-              image.src = template.thumbnail;
+              image.src = thumbnailSrc;
               image.className = "h-full w-auto object-contain";
               image.alt = "模板缩略图";
+              image.loading = "lazy";
+              image.decoding = "async";
+              image.onerror = () => {
+                image.remove();
+                const icon = document.createElement("i");
+                icon.className = "ph ph-file-plus text-3xl text-gray-300";
+                preview.appendChild(icon);
+              };
               preview.appendChild(image);
             } else {
               const icon = document.createElement("i");
