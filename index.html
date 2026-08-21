@@ -729,6 +729,30 @@
         </div>
       </div>
     </div>
+    <div id="draftPanel" class="hidden fixed bottom-4 right-4 z-[80] w-[340px] max-h-[70vh] flex flex-col rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-2.5 bg-gray-50 border-b border-gray-100 shrink-0">
+        <span class="text-sm font-bold text-slate-700 flex items-center gap-2">
+          <i class="ph ph-clipboard-text text-red-500 text-base"></i> 未保存草稿
+        </span>
+        <button onclick="App.draft.closePanel()" class="text-slate-400 hover:text-slate-600 transition" title="忽略（草稿将保留）">
+          <i class="ph ph-x text-lg"></i>
+        </button>
+      </div>
+      <div id="draftList" class="flex-1 overflow-y-auto p-2 space-y-2 custom-scrollbar"></div>
+      <div class="flex items-center justify-between px-3 py-2 border-t border-gray-100 bg-gray-50 shrink-0">
+        <span id="draftLimitHint" class="text-[10px] text-slate-400"></span>
+        <button onclick="App.draft.clearAll()" class="text-xs text-red-600 hover:text-red-800 font-medium">清空草稿</button>
+      </div>
+    </div>
+    <button
+      id="draftFab"
+      onclick="App.draft.showPanel()"
+      class="hidden fixed bottom-4 right-4 z-[70] flex items-center gap-2 rounded-full bg-red-600 text-white pl-3 pr-2 py-2 shadow-lg hover:bg-red-700 transition"
+      title="打开草稿箱">
+      <i class="ph ph-clipboard-text text-lg"></i>
+      <span class="text-xs font-bold">草稿箱</span>
+      <span id="draftFabCount" class="min-w-5 h-5 px-1 rounded-full bg-white text-red-600 text-[10px] font-bold flex items-center justify-center">0</span>
+    </button>
     <div id="tableModal" class="hidden fixed inset-0 z-50 items-center justify-center modal-backdrop">
       <div class="bg-white w-[98vw] h-[95vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 z-20 bg-white shadow-sm shrink-0">
@@ -3156,6 +3180,7 @@
             this.index = this.stack.length - 1;
             this.updateUI();
             App.state.hasUnsavedChanges = true;
+            App.draft.schedule();
             setTimeout(() => {
               if (App.dataSource) {
                 App.dataSource.updateNavUI();
@@ -3192,6 +3217,253 @@
               this.locked = false;
               this.updateUI();
             });
+          },
+        },
+
+        project: {
+          // 统一构建 .paper / 模板 / 草稿共用的工程快照
+          buildSnapshot: function (opts = {}) {
+            const settings = App.paper.getSettings();
+            const fitLabelEl = document.getElementById("fitLabelSize");
+            if (fitLabelEl) {
+              settings.fitLabelSize = fitLabelEl.checked;
+              if (settings.fitLabelSize && settings.type === "label") {
+                const val = (id) => parseFloat(document.getElementById(id)?.value) || 0;
+                const intVal = (id) => parseInt(document.getElementById(id)?.value) || 1;
+                settings.marginTop = val("marginTop") * CONFIG.MM_TO_PX;
+                settings.marginBottom = val("marginBottom") * CONFIG.MM_TO_PX;
+                settings.marginLeft = val("marginLeft") * CONFIG.MM_TO_PX;
+                settings.marginRight = val("marginRight") * CONFIG.MM_TO_PX;
+                settings.labelGapH = val("labelGapH");
+                settings.labelGapV = val("labelGapV");
+                settings.labelCols = intVal("labelCols");
+                settings.labelRows = intVal("labelRows");
+              }
+            }
+
+            let canvasData;
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              canvasData = typeof App.state.label.designContent === "string" ? JSON.parse(App.state.label.designContent) : App.state.label.designContent;
+            } else {
+              canvasData = App.canvas.toJSON(CUSTOM_PROPS);
+              canvasData.objects = (canvasData.objects || []).filter((o) => !o.isGrid);
+            }
+
+            if (canvasData && canvasData.objects) {
+              canvasData.objects.forEach((obj) => {
+                if (obj.type === "image" && obj.dataBinding && obj.src && obj.src.startsWith("blob:")) {
+                  obj.src = "";
+                }
+              });
+            }
+
+            let dataSource = null;
+            if (opts.includeDataSource) {
+              const dsState = App.state.dataSource;
+              dataSource = dsState.isActive && dsState.fileHandleId
+                ? {
+                    fileName: dsState.fileName,
+                    currentSheet: dsState.currentSheet,
+                    fileHandleId: dsState.fileHandleId,
+                    imgDirId: dsState.imgDirId,
+                  }
+                : null;
+            }
+
+            return {
+              version: "4.2",
+              timestamp: new Date().toISOString(),
+              settings,
+              paperSize: document.getElementById("paperSize").value,
+              thumbnail: App.canvas.toDataURL({
+                format: "png",
+                multiplier: opts.thumbnailMultiplier ?? 0.5,
+              }),
+              canvasData,
+              dataSource,
+            };
+          },
+        },
+
+        draft: {
+          storageKey: "paperstudio:draft:v1",
+          maxDrafts: 5,
+          ready: false,
+          timer: null,
+          hasPending: false,
+          lastSavedAt: null,
+          _pendingList: [],
+          _suspended: false,
+          _chain: null,
+
+          // 画布 / 纸张 / 数据源变更后调用，防抖合并写入
+          schedule: function () {
+            if (!this.ready || this._suspended) return;
+            this.hasPending = true;
+            clearTimeout(this.timer);
+            this.timer = setTimeout(() => this.save(), 500);
+          },
+
+          // 关闭页面 / 切换后台时立即落盘
+          flush: function () {
+            if (this.timer) {
+              clearTimeout(this.timer);
+              this.timer = null;
+            }
+            if (this.hasPending) this.save();
+          },
+
+          // 打开/加载工程期间挂起，避免"仅打开未修改"也生成草稿
+          suspend: function () {
+            this._suspended = true;
+          },
+
+          resume: function () {
+            this._suspended = false;
+          },
+
+          save: function () {
+            this.timer = null;
+            this.hasPending = false;
+            // 串行化写入，避免防抖/立即落盘并发时互相覆盖
+            this._chain = (this._chain || Promise.resolve()).then(() => this._saveNow());
+          },
+
+          _saveNow: async function () {
+            try {
+              const snapshot = App.project.buildSnapshot({
+                includeDataSource: true,
+                thumbnailMultiplier: 0.25,
+              });
+              const list = await this._loadList();
+              list.unshift(snapshot);
+              // 末位删除：超过上限时丢弃最旧（末尾）的草稿
+              if (list.length > this.maxDrafts) list.splice(this.maxDrafts);
+              await idbKeyval.set(this.storageKey, list);
+              this.lastSavedAt = Date.now();
+              this._pendingList = list;
+              this._syncFab();
+              const panel = document.getElementById("draftPanel");
+              if (panel && !panel.classList.contains("hidden")) {
+                this.renderList();
+              }
+            } catch (e) {
+              console.error("自动保存草稿失败", e);
+            }
+          },
+
+          _loadList: async function () {
+            try {
+              const stored = await idbKeyval.get(this.storageKey);
+              if (Array.isArray(stored)) {
+                return stored.filter((d) => d && d.canvasData && d.settings);
+              }
+              // 兼容旧版单草稿格式，自动迁移为数组
+              if (stored && stored.canvasData && stored.settings) return [stored];
+            } catch (e) {}
+            return [];
+          },
+
+          clear: function () {
+            this.hasPending = false;
+            if (this.timer) {
+              clearTimeout(this.timer);
+              this.timer = null;
+            }
+            this.lastSavedAt = null;
+            this._pendingList = [];
+            this.closePanel();
+            this._syncFab();
+            idbKeyval.del(this.storageKey).catch(() => {});
+          },
+
+          checkDraft: async function () {
+            try {
+              const list = await this._loadList();
+              if (!list.length) return;
+              this._pendingList = list;
+              this.renderList();
+              this.showPanel();
+            } catch (e) {
+              console.error("读取草稿失败", e);
+            }
+          },
+
+          showPanel: function () {
+            if (Array.isArray(this._pendingList) && this._pendingList.length) this.renderList();
+            const panel = document.getElementById("draftPanel");
+            if (panel) panel.classList.remove("hidden");
+            this._syncFab();
+          },
+
+          closePanel: function () {
+            const panel = document.getElementById("draftPanel");
+            if (panel) panel.classList.add("hidden");
+          },
+
+          _syncFab: function () {
+            const fab = document.getElementById("draftFab");
+            if (!fab) return;
+            const count = Array.isArray(this._pendingList) ? this._pendingList.length : 0;
+            fab.classList.toggle("hidden", count === 0);
+            const badge = document.getElementById("draftFabCount");
+            if (badge) badge.textContent = count;
+          },
+
+          renderList: function () {
+            const container = document.getElementById("draftList");
+            if (!container) return;
+            container.innerHTML = "";
+            this._pendingList.forEach((draft, index) => {
+              const timeText = draft.timestamp ? new Date(draft.timestamp).toLocaleString() : "未知时间";
+              const count = (draft.canvasData.objects || []).length;
+              const thumb = draft.thumbnail && String(draft.thumbnail).startsWith("data:image/")
+                ? `<img src="${draft.thumbnail}" alt="" class="h-10 w-10 rounded object-contain border border-gray-200 bg-white shrink-0" />`
+                : "";
+              const row = document.createElement("div");
+              row.className = "flex items-center gap-2 rounded-lg border border-gray-100 bg-white p-2";
+              row.innerHTML = `
+                ${thumb}
+                <div class="flex-1 min-w-0 text-[11px] text-slate-500">
+                  <div class="truncate font-medium text-slate-700">${timeText}</div>
+                  <div>${count} 个对象</div>
+                </div>
+                <button onclick="App.draft.restore(${index})" class="shrink-0 px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 text-xs font-medium">恢复</button>
+                <button onclick="App.draft.remove(${index})" class="shrink-0 p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition" title="删除此草稿">
+                  <i class="ph ph-trash"></i>
+                </button>
+              `;
+              container.appendChild(row);
+            });
+            const hint = document.getElementById("draftLimitHint");
+            if (hint) hint.textContent = `共 ${this._pendingList.length} 份，最多保留 ${this.maxDrafts} 份（超出自动删除最旧）`;
+          },
+
+          restore: function (index) {
+            const draft = this._pendingList?.[index];
+            if (!draft) return;
+            this.closePanel();
+            App.ui.showLoading("正在恢复草稿...");
+            App.io.loadProjectData(draft, { markUnsaved: true });
+          },
+
+          remove: async function (index) {
+            if (!this._pendingList || !this._pendingList[index]) return;
+            this._pendingList.splice(index, 1);
+            await idbKeyval.set(this.storageKey, this._pendingList);
+            this._syncFab();
+            if (this._pendingList.length) {
+              this.renderList();
+            } else {
+              this.closePanel();
+            }
+            Utils.toast("草稿已删除");
+          },
+
+          clearAll: function () {
+            if (!window.confirm("确定清空所有未保存草稿吗？")) return;
+            this.clear();
+            Utils.toast("草稿已清空");
           },
         },
 
@@ -3429,6 +3701,7 @@
             } else {
               this.updateUI();
             }
+            App.draft.schedule();
           },
 
           changeSheet: function (sheetName) {
@@ -3453,6 +3726,7 @@
 
             this.updateUI();
             this.updateNavUI();
+            App.draft.schedule();
           },
 
           calculateTotalPages: function () {
@@ -5035,6 +5309,7 @@
             const gc = document.getElementById("gridColumns");
             if (gc) document.getElementById("gridColDisplay").value = gc.value;
             App.state.hasUnsavedChanges = true;
+            App.draft.schedule();
             if (App.state.paperType !== "label") {
               this.drawPaper();
             } else if (App.state.label.mode === "design") {
@@ -5729,11 +6004,18 @@
               }, 100);
             });
             window.addEventListener("beforeunload", (e) => {
+              App.draft.flush();
               if (App.state.hasUnsavedChanges) {
                 e.preventDefault();
                 e.returnValue = "未保存更改";
                 return "未保存更改";
               }
+            });
+            window.addEventListener("pagehide", () => {
+              App.draft.flush();
+            });
+            document.addEventListener("visibilitychange", () => {
+              if (document.hidden) App.draft.flush();
             });
           },
 
@@ -9424,70 +9706,9 @@
           },
 
           saveProject: function () {
-            const settings = App.paper.getSettings();
-            const fitLabelEl = document.getElementById("fitLabelSize");
-            if (fitLabelEl) {
-              settings.fitLabelSize = fitLabelEl.checked;
-              if (settings.fitLabelSize && settings.type === "label") {
-                const val = (id) => parseFloat(document.getElementById(id)?.value) || 0;
-                const intVal = (id) => parseInt(document.getElementById(id)?.value) || 1;
-                settings.marginTop = val("marginTop") * CONFIG.MM_TO_PX;
-                settings.marginBottom = val("marginBottom") * CONFIG.MM_TO_PX;
-                settings.marginLeft = val("marginLeft") * CONFIG.MM_TO_PX;
-                settings.marginRight = val("marginRight") * CONFIG.MM_TO_PX;
-                settings.labelGapH = val("labelGapH");
-                settings.labelGapV = val("labelGapV");
-                settings.labelCols = intVal("labelCols");
-                settings.labelRows = intVal("labelRows");
-              }
-            }
-
-            let canvasData;
-            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
-              canvasData = typeof App.state.label.designContent === "string" ? JSON.parse(App.state.label.designContent) : App.state.label.designContent;
-            } else {
-              canvasData = App.canvas.toJSON(CUSTOM_PROPS);
-              canvasData.objects = canvasData.objects.filter((o) => !o.isGrid);
-            }
-
-            if (canvasData.objects) {
-              canvasData.objects.forEach((obj) => {
-                if (obj.type === "image" && obj.dataBinding && obj.src && obj.src.startsWith("blob:")) {
-                  obj.src = "";
-                }
-              });
-            }
-
-            const dsState = App.state.dataSource;
-            const dsMeta =
-              dsState.isActive && dsState.fileHandleId
-                ? {
-                    fileName: dsState.fileName,
-                    currentSheet: dsState.currentSheet,
-                    fileHandleId: dsState.fileHandleId,
-                    imgDirId: dsState.imgDirId,
-                  }
-                : null;
-            const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
-            const blob = new Blob(
-              [
-                JSON.stringify({
-                  version: "4.2",
-                  timestamp: new Date().toISOString(),
-                  settings: settings,
-                  paperSize: document.getElementById("paperSize").value,
-                  thumbnail: App.canvas.toDataURL({
-                    format: "png",
-                    multiplier: 0.5,
-                  }),
-                  canvasData: canvasData,
-                  dataSource: dsMeta,
-                }),
-              ],
-              {
-                type: "application/json",
-              },
-            );
+            const snapshot = App.project.buildSnapshot({ includeDataSource: true });
+            const typeLabel = App.paper.defaults[snapshot.settings.type]?.label || "设计稿";
+            const blob = new Blob([JSON.stringify(snapshot)], { type: "application/json" });
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
             a.download = `${typeLabel}_${Date.now()}.paper`;
@@ -9495,9 +9716,11 @@
             URL.revokeObjectURL(a.href);
             Utils.toast("项目已保存");
             App.state.hasUnsavedChanges = false;
+            App.draft.clear();
           },
 
-          loadProjectData: function (data) {
+          loadProjectData: function (data, opts = {}) {
+            App.draft.suspend();
             try {
               if (data.settings) {
                 const s = data.settings;
@@ -9611,15 +9834,17 @@
                   }
                 });
                 App.history.reset();
-                App.state.hasUnsavedChanges = false;
+                App.state.hasUnsavedChanges = !!opts.markUnsaved;
                 App.ui.hideLoading();
                 Utils.toast("项目加载成功");
+                App.draft.resume();
               };
               data.canvasData ? App.canvas.loadFromJSON(data.canvasData, done) : done();
             } catch (e) {
               console.error(e);
               Utils.toast("数据解析异常: " + e.message, "error");
               App.ui.hideLoading();
+              App.draft.resume();
             }
           },
 
@@ -10348,37 +10573,7 @@
           },
 
           _createProjectSnapshot: function () {
-            const settings = App.paper.getSettings();
-            const fitLabelEl = document.getElementById("fitLabelSize");
-            if (fitLabelEl?.checked && settings.type === "label") {
-              const value = (id) => parseFloat(document.getElementById(id)?.value) || 0;
-              const integer = (id) => parseInt(document.getElementById(id)?.value) || 1;
-              settings.fitLabelSize = true;
-              settings.marginTop = value("marginTop") * CONFIG.MM_TO_PX;
-              settings.marginBottom = value("marginBottom") * CONFIG.MM_TO_PX;
-              settings.marginLeft = value("marginLeft") * CONFIG.MM_TO_PX;
-              settings.marginRight = value("marginRight") * CONFIG.MM_TO_PX;
-              settings.labelGapH = value("labelGapH");
-              settings.labelGapV = value("labelGapV");
-              settings.labelCols = integer("labelCols");
-              settings.labelRows = integer("labelRows");
-            }
-            const canvasData = App.state.paperType === "label" && App.state.label.mode === "preview"
-              ? (typeof App.state.label.designContent === "string" ? JSON.parse(App.state.label.designContent) : App.state.label.designContent)
-              : App.canvas.toJSON(CUSTOM_PROPS);
-            canvasData.objects = (canvasData.objects || []).filter((object) => !object.isGrid);
-            canvasData.objects.forEach((object) => {
-              if (object.type === "image" && object.dataBinding && String(object.src || "").startsWith("blob:")) object.src = "";
-            });
-            return {
-              version: "4.2",
-              timestamp: new Date().toISOString(),
-              settings,
-              paperSize: document.getElementById("paperSize").value,
-              thumbnail: App.canvas.toDataURL({ format: "png", multiplier: 0.5 }),
-              canvasData,
-              dataSource: null,
-            };
+            return App.project.buildSnapshot({ includeDataSource: false });
           },
 
           saveCurrent: async function () {
@@ -10577,6 +10772,7 @@
               App.dataSource.close();
               App.ui.showLoading("创建中...");
               setTimeout(() => {
+                App.draft.suspend();
                 App.paper.changeType("blank", true);
                 const defaults = {
                   paperSize: "A4",
@@ -10597,6 +10793,7 @@
                 App.ui.hideModal("welcomeModal");
                 App.ui.updateLayerList();
                 App.history.reset();
+                App.draft.resume();
                 App.ui.hideLoading();
               }, 200);
               return;
@@ -10864,6 +11061,8 @@
       };
       window.onload = function () {
         App.init();
+        App.draft.ready = true;
+        App.draft.checkDraft();
         const propFontSelect = document.getElementById('propFont');
         const propFontContainer = document.getElementById('propFontPicker');
         if (propFontSelect && propFontContainer) {
