@@ -162,6 +162,17 @@
         width: 120px;
       }
 
+      .dropdown-menu.export-menu {
+        left: auto;
+        right: 0;
+        width: 190px;
+        padding: 0.4rem;
+      }
+
+      .dropdown-menu.export-menu button {
+        font-size: 13px;
+      }
+
       /* 表格编辑器 */
       .table-editor-grid {
         border-collapse: collapse;
@@ -663,6 +674,52 @@
         </div>
       </div>
     </div>
+    <div id="pngExportModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+      <div class="bg-white rounded-xl shadow-2xl p-6 w-[400px] relative">
+        <button
+          onclick="App.ui.hideModal('pngExportModal')"
+          class="absolute top-3 right-3 text-slate-400 hover:text-slate-600 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition">
+          <i class="ph ph-x text-lg"></i>
+        </button>
+
+        <h3 class="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2">
+          <i class="ph ph-file-png text-red-500 text-xl"></i> 导出 PNG 图片
+        </h3>
+        <p class="text-sm text-slate-400 mb-4">适用于电商物料、贴纸与线上分享</p>
+
+        <div class="space-y-4">
+          <div>
+            <label class="compact-label">导出倍率</label>
+            <div class="flex items-center gap-2 mt-1">
+              <input type="number" id="pngScale" value="2" min="0.5" max="8" step="0.5" oninput="App.io.updatePngSizeHint()" class="w-24 compact-input border rounded text-center" title="输出倍率" />
+              <div class="flex gap-1">
+                <button type="button" onclick="App.io.setPngScale(1)" class="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-xs font-medium">1x</button>
+                <button type="button" onclick="App.io.setPngScale(2)" class="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-xs font-medium">2x</button>
+                <button type="button" onclick="App.io.setPngScale(3)" class="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-xs font-medium">3x</button>
+                <button type="button" onclick="App.io.setPngScale(4)" class="px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-xs font-medium">4x</button>
+              </div>
+            </div>
+            <p class="text-xs text-slate-400 mt-1.5">输出尺寸：<span id="pngSizeHint" class="font-mono text-slate-500">—</span></p>
+          </div>
+
+          <div>
+            <label class="compact-label">背景</label>
+            <label class="flex items-center gap-2 cursor-pointer select-none mt-1.5">
+              <input type="checkbox" id="pngTransparent" checked class="accent-red-600 rounded scale-90" />
+              <span class="text-slate-600 text-sm">透明背景 <span class="text-gray-400 text-xs">（适合电商物料/贴纸）</span></span>
+            </label>
+            <p class="text-xs text-slate-400 mt-1">取消勾选后使用纸张背景色填充。</p>
+          </div>
+        </div>
+
+        <div class="flex gap-3 justify-end mt-6">
+          <button onclick="App.ui.hideModal('pngExportModal')" class="px-4 py-2 rounded-lg border border-gray-300 text-slate-600 hover:bg-gray-50 text-sm transition">取消</button>
+          <button onclick="App.io.exportPNG()" class="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 text-sm font-bold shadow-md shadow-red-100 transition flex items-center gap-2">
+            <i class="ph ph-download-simple text-lg"></i> 导出 PNG
+          </button>
+        </div>
+      </div>
+    </div>
     <div id="tableModal" class="hidden fixed inset-0 z-50 items-center justify-center modal-backdrop">
       <div class="bg-white w-[98vw] h-[95vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 z-20 bg-white shadow-sm shrink-0">
@@ -955,12 +1012,26 @@
         <button onclick="App.ui.toggleFullScreen()" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="全屏模式">
           <i id="fsIcon" class="ph ph-corners-out text-lg"></i>
         </button>
-        <button onclick="App.io.exportPDF()" class="bg-white border border-red-200 text-red-600 hover:bg-red-50 px-3 py-1.5 rounded flex items-center gap-1 shadow-sm transition">
-          <i class="ph ph-file-pdf text-lg"></i> 导出 PDF
-        </button>
-        <button onclick="App.io.print()" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1.5 rounded flex items-center gap-1 shadow-sm transition" title="打印 (Ctrl+P)">
-          <i class="ph ph-printer text-lg"></i> 打印
-        </button>
+        <div class="relative dropdown">
+          <button class="flex items-center gap-1 px-3 py-1.5 rounded bg-white border border-red-200 text-red-600 hover:bg-red-50 shadow-sm transition" title="导出">
+            <i class="ph ph-export text-lg"></i> 导出 <i class="ph ph-caret-down text-xs"></i>
+          </button>
+          <div class="dropdown-menu export-menu">
+            <button onclick="App.io.exportPDF()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
+              <i class="ph ph-file-pdf text-red-500 text-lg"></i> 导出 PDF
+            </button>
+            <button onclick="App.ui.showModal('pngExportModal'); App.io.updatePngSizeHint()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
+              <i class="ph ph-file-png text-lg"></i> 导出 PNG…
+            </button>
+            <button onclick="App.io.exportSVG()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
+              <i class="ph ph-file-svg text-lg"></i> 导出 SVG
+            </button>
+            <div class="h-px bg-gray-200 my-1"></div>
+            <button onclick="App.io.print()" class="w-full text-left px-3 py-2 hover:bg-red-50 flex items-center gap-2 text-slate-700 transition">
+              <i class="ph ph-printer text-lg"></i> 打印 <span class="ml-auto text-[10px] text-gray-400">Ctrl+P</span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 
@@ -5638,6 +5709,7 @@
             bindModalClose("welcomeModal");
             bindModalClose("contactModal");
             bindModalClose("sponsorModal");
+            bindModalClose("pngExportModal");
             document.addEventListener("fullscreenchange", () => {
               const icon = document.getElementById("fsIcon");
               if (icon) {
@@ -9032,7 +9104,7 @@
             doc.body.appendChild(page);
           },
 
-           _getExportCanvas: async function () {
+           _getExportCanvas: async function (opts = {}) {
             const originalBg = App.canvas.backgroundImage;
             let shouldHideBg = false;
             if (originalBg && originalBg.printBackground === false) {
@@ -9044,7 +9116,12 @@
             if (shouldHideBg) {
               App.canvas.backgroundImage = originalBg;
             }
-            
+            if (opts.transparent) {
+              delete json.background;
+              delete json.overlay;
+              delete json.overlayColor;
+            }
+
             const grids = App.canvas
               .getObjects()
               .filter((o) => o.isGrid && !o.isCutLine)
@@ -9056,7 +9133,7 @@
             const tC = new fabric.Canvas(null, {
               width: App.state.baseWidth,
               height: App.state.baseHeight,
-              backgroundColor: App.paper.getSettings().paperBgColor,
+              backgroundColor: opts.transparent ? null : App.paper.getSettings().paperBgColor,
             });
             return new Promise((resolve) => {
               tC.loadFromJSON(json, async () => {
@@ -9082,7 +9159,7 @@
             });
           },
 
-          print: async function () {
+          _renderExportPages: async function (cb) {
             const updateTasks = App.canvas.getObjects().map(async (o) => {
               if (o.isDynamicDate && o.dateConfig) {
                 o.rawContent = Utils.formatDate(new Date(), null, o.dateConfig);
@@ -9091,6 +9168,7 @@
             });
             await Promise.all(updateTasks);
             App.canvas.requestRenderAll();
+
             const isLabelDesign = App.state.paperType === "label" && App.state.label.mode === "design";
             const isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
             if (isLabelDesign) {
@@ -9104,10 +9182,8 @@
             const originalLabelPage = App.state.label.previewPage || 0;
             const loopCount = shouldBatch ? totalPages : 1;
             const { w, h } = App.state.currentPaper;
+            const results = [];
             try {
-              const css = this._getFontCss() + " body { display: block !important; margin: 0; } @page { margin: 0; }";
-              const printFrame = this._createPrintIframe(css);
-              const printDoc = printFrame.contentWindow.document;
               for (let i = 0; i < loopCount; i++) {
                 if (shouldBatch) {
                   if (isLabelPreview || isLabelDesign) {
@@ -9116,32 +9192,14 @@
                   } else {
                     await App.dataSource.renderPage(i);
                   }
-                } else {
-                  if (isLabelPreview) await App.label.renderPreview();
+                } else if (isLabelPreview) {
+                  await App.label.renderPreview();
                 }
 
-                const vC =  await this._getExportCanvas();
-                vC.setViewportTransform([1, 0, 0, 1, 0, 0]);
-                const svg = vC.toSVG({
-                  suppressPreamble: true,
-                  viewBox: {
-                    x: 0,
-                    y: 0,
-                    width: App.state.baseWidth,
-                    height: App.state.baseHeight,
-                  },
-                });
-                vC.dispose();
-                this._appendPrintPage(printDoc, svg, w, h);
+                const result = await cb(i, loopCount, { w, h });
+                if (result !== undefined) results.push(result);
               }
-
-              await new Promise((resolve) => {
-                printFrame.contentWindow.requestAnimationFrame(() => printFrame.contentWindow.requestAnimationFrame(resolve));
-              });
-              printFrame.contentWindow.print();
-            } catch (e) {
-              console.error(e);
-              Utils.toast("打印生成失败: " + e.message, "error");
+              return results;
             } finally {
               if (shouldBatch) {
                 if (isLabelPreview || isLabelDesign) {
@@ -9151,58 +9209,74 @@
                   App.dataSource.renderPage(originalIndex);
                 }
               }
+            }
+          },
+
+          _downloadBlob: function (blob, fileName) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 10000);
+          },
+
+          _pageSVG: function (vC, extra = {}) {
+            vC.setViewportTransform([1, 0, 0, 1, 0, 0]);
+            return vC.toSVG({
+              suppressPreamble: true,
+              viewBox: { x: 0, y: 0, width: App.state.baseWidth, height: App.state.baseHeight },
+              ...extra,
+            });
+          },
+
+          print: async function () {
+            try {
+              const css = this._getFontCss() + " body { display: block !important; margin: 0; } @page { margin: 0; }";
+              const printFrame = this._createPrintIframe(css);
+              const printDoc = printFrame.contentWindow.document;
+              const { w, h } = App.state.currentPaper;
+              await this._renderExportPages(async () => {
+                const vC = await this._getExportCanvas();
+                const svg = this._pageSVG(vC);
+                vC.dispose();
+                this._appendPrintPage(printDoc, svg, w, h);
+              });
+
+              await new Promise((resolve) => {
+                printFrame.contentWindow.requestAnimationFrame(() => printFrame.contentWindow.requestAnimationFrame(resolve));
+              });
+              printFrame.contentWindow.print();
+            } catch (e) {
+              console.error(e);
+              Utils.toast("打印生成失败: " + e.message, "error");
+            } finally {
               App.ui.hideLoading();
             }
           },
 
           exportPDF: async function () {
-            const btn = document.querySelector('button[onclick="App.io.exportPDF()"]');
-            const oldTxt = btn ? btn.innerHTML : "";
-            if (btn) {
-              btn.disabled = true;
-              btn.innerHTML = `<i class="ph ph-spinner animate-spin"></i> 处理中...`;
-            }
-
-            const originalIndex = App.state.currentDataIndex;
-            const originalLabelPage = App.state.label.previewPage || 0;
-            let shouldBatch = false;
-            let isLabelPreview = false;
             try {
               const usedFonts = new Set();
-              usedFonts.add("SourceHanSerifCN-Bold"); 
-              App.canvas.getObjects().forEach(o => {
-                if (['i-text', 'textbox', 'text'].includes(o.type) && o.fontFamily) {
+              usedFonts.add("SourceHanSerifCN-Bold");
+              App.canvas.getObjects().forEach((o) => {
+                if (["i-text", "textbox", "text"].includes(o.type) && o.fontFamily) {
                   usedFonts.add(o.fontFamily);
                 }
                 if (o.isTable && o.tableData && o.tableData.cells) {
-                  o.tableData.cells.flat().forEach(cell => {
+                  o.tableData.cells.flat().forEach((cell) => {
                     if (cell && cell.fontFamily) usedFonts.add(cell.fontFamily);
                   });
                 }
               });
               if (App.fontManager.availableFonts.length === 0) {
-                 App.ui.showLoading("首次导出需加载系统字体...");
-                 await App.fontManager.queryLocalFonts();
+                App.ui.showLoading("首次导出需加载系统字体...");
+                await App.fontManager.queryLocalFonts();
               }
 
-              const updateTasks = App.canvas.getObjects().map(async (o) => {
-                if (o.isDynamicDate && o.dateConfig) {
-                  o.rawContent = Utils.formatDate(new Date(), null, o.dateConfig);
-                  return App.content.render(o);
-                }
-              });
-              await Promise.all(updateTasks);
-              App.canvas.requestRenderAll();
-              const isLabelDesign = App.state.paperType === "label" && App.state.label.mode === "design";
-              if (isLabelDesign) {
-                App.label.enterPreview();
-                await new Promise((r) => setTimeout(r, 100));
-              }
-
-              isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
-              const totalPages = App.dataSource.calculateTotalPages();
-              shouldBatch = totalPages > 1 && !App.state.printCurrentOnly;
-              const loopCount = shouldBatch ? totalPages : 1;
+              App.ui.showLoading("正在准备 PDF...");
               const { w, h } = App.state.currentPaper;
               const orientation = w > h ? "l" : "p";
               const pdf = new window.jspdf.jsPDF({
@@ -9212,64 +9286,116 @@
                 compress: true,
               });
               try {
-                App.ui.showLoading("正在渲染PDF..");
+                App.ui.showLoading("正在渲染 PDF..");
                 await App.fontManager.applyToJsPDF(pdf, Array.from(usedFonts));
-              } catch(fontErr) {
+              } catch (fontErr) {
                 console.warn("字体应用到 PDF 失败:", fontErr);
               }
 
               const settings = App.paper.getSettings();
               const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
-              for (let i = 0; i < loopCount; i++) {
-                if (shouldBatch) {
-                  if (isLabelPreview) {
-                    App.state.label.previewPage = i;
-                    await App.label.renderPreview();
-                  } else {
-                    await App.dataSource.renderPage(i);
-                  }
-                }
-
+              let pageCount = 0;
+              await this._renderExportPages(async (i) => {
+                pageCount++;
                 App.ui.showLoading(`正在生成第 ${i + 1} 页...`);
-                const vC =  await this._getExportCanvas(); 
-                vC.setViewportTransform([1, 0, 0, 1, 0, 0]);
-                const svg = vC.toSVG({
-                  suppressPreamble: true,
-                  viewBox: { x: 0, y: 0, width: App.state.baseWidth, height: App.state.baseHeight }
-                });
+                const vC = await this._getExportCanvas();
+                const svg = this._pageSVG(vC);
                 vC.dispose();
                 if (i > 0) pdf.addPage([w, h], orientation);
                 await pdf.svg(new DOMParser().parseFromString(svg, "image/svg+xml").documentElement, {
-                  x: 0, y: 0, width: w, height: h
+                  x: 0,
+                  y: 0,
+                  width: w,
+                  height: h,
                 });
-              }
+              });
 
               App.ui.showLoading("正在保存 PDF...");
               const fileName = `${typeLabel}_${Date.now()}.pdf`;
               pdf.save(fileName);
-              Utils.toast(`PDF 导出成功 (${loopCount} 页)`);
-} catch (e) {
+              Utils.toast(`PDF 导出成功 (${pageCount} 页)`);
+            } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
             } finally {
-              if (shouldBatch) {
-                if (isLabelPreview) {
-                  App.state.label.previewPage = originalLabelPage;
-                  await App.label.renderPreview();
-                } else {
-                  App.dataSource.renderPage(originalIndex);
-                }
-              }
-
               if (App.fontManager && typeof App.fontManager.clearCache === "function") {
                 App.fontManager.clearCache();
               }
-
               App.ui.hideLoading();
-              if (btn) {
-                btn.disabled = false;
-                btn.innerHTML = oldTxt;
-              }
+            }
+          },
+
+          setPngScale: function (n) {
+            const input = document.getElementById("pngScale");
+            if (input) input.value = n;
+            this.updatePngSizeHint();
+          },
+
+          updatePngSizeHint: function () {
+            const scale = parseFloat(document.getElementById("pngScale")?.value) || 1;
+            const el = document.getElementById("pngSizeHint");
+            if (el) {
+              el.innerText = `${Math.round(App.state.baseWidth * scale)} × ${Math.round(App.state.baseHeight * scale)} px`;
+            }
+          },
+
+          exportPNG: async function () {
+            const scale = parseFloat(document.getElementById("pngScale")?.value) || 1;
+            const transparent = document.getElementById("pngTransparent")?.checked !== false;
+            App.ui.showLoading("正在生成 PNG...");
+            try {
+              const settings = App.paper.getSettings();
+              const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
+              const blobs = await this._renderExportPages(async (i, loopCount) => {
+                App.ui.showLoading(`正在生成第 ${i + 1} 页 PNG (${scale}x)...`);
+                const vC = await this._getExportCanvas({ transparent });
+                vC.setViewportTransform([1, 0, 0, 1, 0, 0]);
+                const canvasEl = vC.toCanvasElement(scale);
+                vC.dispose();
+                return await new Promise((resolve) => canvasEl.toBlob(resolve, "image/png"));
+              });
+
+              App.ui.showLoading("正在保存 PNG...");
+              blobs.forEach((blob, i) => {
+                const suffix = blobs.length > 1 ? `_${i + 1}` : "";
+                const fileName = `${typeLabel}${suffix}_${scale}x${transparent ? "_透明" : ""}.png`;
+                this._downloadBlob(blob, fileName);
+              });
+              Utils.toast(`PNG 导出成功 (${blobs.length} 页)`);
+            } catch (e) {
+              console.error(e);
+              Utils.toast("导出失败: " + e.message, "error");
+            } finally {
+              App.ui.hideLoading();
+            }
+          },
+
+          exportSVG: async function () {
+            App.ui.showLoading("正在生成 SVG...");
+            try {
+              const settings = App.paper.getSettings();
+              const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
+              const { w, h } = App.state.currentPaper;
+              const svgs = await this._renderExportPages(async (i) => {
+                App.ui.showLoading(`正在生成第 ${i + 1} 页 SVG...`);
+                const vC = await this._getExportCanvas();
+                const svg = '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n' + this._pageSVG(vC, { width: w + "mm", height: h + "mm" });
+                vC.dispose();
+                return svg;
+              });
+
+              App.ui.showLoading("正在保存 SVG...");
+              svgs.forEach((svg, i) => {
+                const suffix = svgs.length > 1 ? `_${i + 1}` : "";
+                const fileName = `${typeLabel}${suffix}_${Date.now()}.svg`;
+                this._downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), fileName);
+              });
+              Utils.toast(`SVG 导出成功 (${svgs.length} 页)`);
+            } catch (e) {
+              console.error(e);
+              Utils.toast("导出失败: " + e.message, "error");
+            } finally {
+              App.ui.hideLoading();
             }
           },
 
