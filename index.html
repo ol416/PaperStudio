@@ -99,6 +99,11 @@
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
       }
 
+      .template-card.selected {
+        border-color: #fca5a5;
+        box-shadow: 0 0 0 1px #fca5a5;
+      }
+
       /* 光标状态 */
       .canvas-container.grabbing-mode canvas {
         cursor: grabbing !important;
@@ -578,9 +583,16 @@
             <h2 class="text-lg font-bold text-slate-800">从模板开始</h2>
             <div class="flex items-center gap-1">
               <button onclick="App.templates.saveCurrent()" class="px-2 py-1 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-50" title="保存当前设计为本地模板"><i class="ph ph-bookmark-simple"></i> 保存模板</button>
-              <button onclick="document.getElementById('templatePackImportInput').click()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导入模板包"><i class="ph ph-upload-simple"></i></button>
-              <button onclick="App.templates.exportLocal()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导出本地模板"><i class="ph ph-download-simple"></i></button>
+              <button id="templateSelectBtn" onclick="App.templates.setSelectMode(!App.templates.selectMode)" class="px-2 py-1 text-xs font-medium rounded border border-gray-200 text-slate-600 hover:bg-gray-50" title="进入选择模式，可多选、全选和批量删除"><i class="ph ph-check-square text-xs"></i> 选择</button>
+              <button onclick="document.getElementById('templatePackImportInput').click()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导入模板（支持 .paper 文件与模板包）"><i class="ph ph-upload-simple"></i></button>
+              <button id="exportLocalBtn" onclick="App.templates.exportLocal()" class="p-1.5 rounded hover:bg-gray-200 text-slate-500" title="导出本地模板"><i class="ph ph-download-simple"></i></button>
             </div>
+          </div>
+          <div id="templateSelectBar" class="hidden mb-3 flex items-center gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2">
+            <span id="templateSelectedCount" class="text-xs font-semibold text-red-600">已选 0 项</span>
+            <button onclick="App.templates.toggleSelectAll()" id="templateSelectAllBtn" class="px-2 py-1 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-100">全选</button>
+            <button onclick="App.templates.batchDelete()" class="px-2 py-1 text-xs font-medium rounded border border-red-200 text-red-600 hover:bg-red-100"><i class="ph ph-trash text-xs"></i> 批量删除</button>
+            <button onclick="App.templates.setSelectMode(false)" class="ml-auto px-2 py-1 text-xs font-medium rounded bg-red-600 text-white hover:bg-red-700">完成</button>
           </div>
           <div class="relative mb-3">
             <i class="ph ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400"></i>
@@ -836,7 +848,7 @@
     </div>
 
     <input type="file" id="projectImportInput" hidden accept=".paper" />
-    <input type="file" id="templatePackImportInput" hidden accept=".paper-templates.json,application/json" />
+    <input type="file" id="templatePackImportInput" hidden accept=".paper,.paper-templates.json,application/json" multiple />
     <input type="file" id="imgUpload" hidden accept="image/*" />
     <input type="file" id="imgReplaceInput" hidden accept="image/*" />
 
@@ -5609,7 +5621,7 @@
               App.io.loadProject(this.files[0]);
             });
             bindInput("templatePackImportInput", function () {
-              App.templates.importLocal(this.files[0]);
+              App.templates.importLocal(this.files);
               this.value = "";
             });
             bindInput("imgReplaceInput", function () {
@@ -9970,6 +9982,8 @@
           data: [],
           localData: [],
           query: "",
+          selected: new Set(),
+          selectMode: false,
           storageKey: "paperstudio:local-templates:v1",
           init: async function () {
             try {
@@ -10031,7 +10045,37 @@
               info.appendChild(tags);
             }
             card.append(preview, info);
-            card.onclick = () => this.load(template.id);
+            const select = isLocal ? document.createElement("button") : null;
+            const applySelection = () => {
+              if (!select) return;
+              card.classList.toggle("selected", this.selected.has(template.id));
+              this._updateSelectButton(select, template.id);
+            };
+            card.onclick = () => {
+              if (this.selectMode) {
+                if (isLocal) {
+                  this.selected.has(template.id) ? this.selected.delete(template.id) : this.selected.add(template.id);
+                  applySelection();
+                  this._updateSelectionToolbar();
+                } else {
+                  Utils.toast("内置模板不支持选择", "info");
+                }
+              } else {
+                this.load(template.id);
+              }
+            };
+            if (select) {
+              select.className = "absolute left-4 top-4 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 shadow hover:text-red-600 text-slate-300";
+              select.innerHTML = '<i class="ph ph-circle text-base"></i>';
+              select.onclick = (event) => {
+                event.stopPropagation();
+                this.selected.has(template.id) ? this.selected.delete(template.id) : this.selected.add(template.id);
+                applySelection();
+                this._updateSelectionToolbar();
+              };
+              card.appendChild(select);
+              applySelection();
+            }
             if (isLocal) {
               const remove = document.createElement("button");
               remove.className = "absolute right-4 top-4 flex h-6 w-6 items-center justify-center rounded-full bg-white/90 text-slate-400 shadow hover:text-red-600";
@@ -10044,6 +10088,84 @@
               card.appendChild(remove);
             }
             return card;
+          },
+
+          _updateSelectButton: function (button, id) {
+            const isSelected = this.selected.has(id);
+            button.title = isSelected ? "取消选择" : "选择用于导出";
+            button.classList.toggle("text-red-600", isSelected);
+            button.classList.toggle("text-slate-300", !isSelected);
+            const icon = button.querySelector("i");
+            if (icon) icon.className = `ph ${isSelected ? "ph-check-circle" : "ph-circle"} text-base`;
+          },
+
+          _visibleTemplates: function () {
+            return this.localData.filter((template) => this._matchesQuery(template));
+          },
+
+          setSelectMode: function (enabled) {
+            this.selectMode = !!enabled;
+            if (this.selectMode) {
+              const localIds = new Set(this.localData.map((template) => template.id));
+              [...this.selected].forEach((id) => {
+                if (!localIds.has(id)) this.selected.delete(id);
+              });
+            }
+            this.render();
+          },
+
+          toggleSelectAll: function () {
+            const visible = this._visibleTemplates();
+            const allSelected = visible.length > 0 && visible.every((template) => this.selected.has(template.id));
+            visible.forEach((template) => {
+              if (allSelected) this.selected.delete(template.id);
+              else this.selected.add(template.id);
+            });
+            this.render();
+          },
+
+          batchDelete: async function () {
+            const targets = this.localData.filter((template) => this.selected.has(template.id));
+            if (!targets.length) return Utils.toast("请先选择要删除的本地模板", "info");
+            if (!window.confirm(`确定删除选中的 ${targets.length} 个本地模板吗？`)) return;
+            const ids = new Set(targets.map((template) => template.id));
+            this.localData = this.localData.filter((template) => !ids.has(template.id));
+            ids.forEach((id) => this.selected.delete(id));
+            await this._persistLocal();
+            this.render();
+            Utils.toast(`已删除 ${targets.length} 个本地模板`, "success");
+          },
+
+          _updateSelectionToolbar: function () {
+            const bar = document.getElementById("templateSelectBar");
+            const modeBtn = document.getElementById("templateSelectBtn");
+            const count = this.selected.size;
+            if (bar) bar.classList.toggle("hidden", !this.selectMode);
+            if (modeBtn) {
+              modeBtn.innerHTML = this.selectMode ? '<i class="ph ph-check text-xs"></i> 完成' : '<i class="ph ph-check-square text-xs"></i> 选择';
+              modeBtn.classList.toggle("border-red-200", this.selectMode);
+              modeBtn.classList.toggle("text-red-600", this.selectMode);
+              modeBtn.classList.toggle("bg-red-50", this.selectMode);
+              modeBtn.classList.toggle("border-gray-200", !this.selectMode);
+              modeBtn.classList.toggle("text-slate-600", !this.selectMode);
+            }
+            const countEl = document.getElementById("templateSelectedCount");
+            if (countEl) countEl.textContent = `已选 ${count} 项`;
+            const allBtn = document.getElementById("templateSelectAllBtn");
+            if (allBtn) {
+              const visible = this._visibleTemplates();
+              allBtn.textContent = visible.length > 0 && visible.every((template) => this.selected.has(template.id)) ? "取消全选" : "全选";
+            }
+            this._updateExportButton();
+          },
+
+          _updateExportButton: function () {
+            const button = document.getElementById("exportLocalBtn");
+            if (!button) return;
+            const count = this.selected.size;
+            button.title = count ? `导出选中的 ${count} 个模板` : "导出本地模板";
+            button.classList.toggle("text-red-600", count > 0);
+            button.classList.toggle("text-slate-500", count === 0);
           },
 
           render: function () {
@@ -10068,6 +10190,7 @@
               empty.textContent = "未找到匹配的模板";
               grid.appendChild(empty);
             }
+            this._updateSelectionToolbar();
           },
 
           _persistLocal: async function () {
@@ -10139,47 +10262,151 @@
             const template = this.localData.find((item) => item.id === id);
             if (!template || !window.confirm(`确定删除模板“${template.name}”吗？`)) return;
             this.localData = this.localData.filter((item) => item.id !== id);
+            this.selected.delete(id);
             await this._persistLocal();
             this.render();
             Utils.toast("本地模板已删除");
           },
 
-          exportLocal: function () {
-            if (!this.localData.length) return Utils.toast("没有可导出的本地模板", "info");
-            const blob = new Blob([JSON.stringify({ format: "PaperStudioTemplatePack", version: 1, templates: this.localData })], { type: "application/json" });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.href = url;
-            link.download = `PaperStudio模板_${Date.now()}.paper-templates.json`;
-            link.click();
-            setTimeout(() => URL.revokeObjectURL(url), 0);
-          },
-
-          importLocal: async function (file) {
-            if (!file) return;
+          exportLocal: async function () {
+            if (this.selectMode && !this.selected.size) return Utils.toast("请先选择要导出的模板", "info");
+            let targets;
+            if (this.selected.size) {
+              targets = [...this.localData, ...this.data].filter((template) => this.selected.has(template.id));
+              if (!targets.length) return Utils.toast("没有可导出的模板", "info");
+            } else {
+              if (!this.localData.length) return Utils.toast("没有可导出的本地模板", "info");
+              targets = this.localData.slice();
+            }
+            App.ui.showLoading("导出中...");
             try {
-              const pack = JSON.parse(await file.text());
-              if (pack.format !== "PaperStudioTemplatePack" || !Array.isArray(pack.templates)) throw new Error("无效的模板包");
-              const imported = pack.templates
-                .filter((template) => template && template.project?.canvasData && template.project?.settings)
-                .map((template) => ({
-                  id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-                  name: String(template.name || "未命名模板").slice(0, 100),
-                  desc: String(template.desc || "本地导入的模板").slice(0, 300),
-                  tags: [...new Set((Array.isArray(template.tags) ? template.tags : []).map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20))],
-                  thumbnail: String(template.thumbnail || "").startsWith("data:image/") ? template.thumbnail : "",
-                  project: template.project,
-                  updatedAt: new Date().toISOString(),
-                }));
-              if (!imported.length) throw new Error("模板包中没有有效模板");
-              this.localData.unshift(...imported);
-              await this._persistLocal();
-              this.render();
-              Utils.toast(`已导入 ${imported.length} 个本地模板`, "success");
+              const entries = [];
+              for (const template of targets) {
+                if (template.project) {
+                  entries.push(template);
+                } else if (template.url) {
+                  try {
+                    const project = await (await fetch(template.url)).json();
+                    entries.push({ ...template, project });
+                  } catch {
+                    /* 内置模板下载失败则跳过 */
+                  }
+                }
+              }
+              if (!entries.length) return Utils.toast("导出失败", "error");
+              const blob = new Blob([JSON.stringify({ format: "PaperStudioTemplatePack", version: 1, templates: entries })], { type: "application/json" });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `PaperStudio模板_${Date.now()}.paper-templates.json`;
+              link.click();
+              setTimeout(() => URL.revokeObjectURL(url), 0);
+              Utils.toast(`已导出 ${entries.length} 个模板`, "success");
             } catch (error) {
               console.error(error);
-              Utils.toast("模板包导入失败", "error");
+              Utils.toast("导出失败", "error");
+            } finally {
+              App.ui.hideLoading();
             }
+          },
+
+          _toLocalTemplate: function (name, desc, tags, thumbnail, project) {
+            return {
+              id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+              name: String(name || "未命名模板").slice(0, 100),
+              desc: String(desc || "本地导入的模板").slice(0, 300),
+              tags: [...new Set((Array.isArray(tags) ? tags : []).map((tag) => String(tag).trim()).filter(Boolean).slice(0, 20))],
+              thumbnail: String(thumbnail || "").startsWith("data:image/") ? thumbnail : "",
+              project,
+              updatedAt: new Date().toISOString(),
+            };
+          },
+
+          _resolveConflicts: function (templates) {
+            const reserved = new Set(this.localData.map((template) => template.name));
+            const added = [];
+            let overwritten = 0;
+            let skipped = 0;
+            for (const template of templates) {
+              if (!reserved.has(template.name)) {
+                reserved.add(template.name);
+                added.push(template);
+                continue;
+              }
+              if (window.confirm(`模板“${template.name}”已存在，是否覆盖？`)) {
+                const existing = this.localData.find((item) => item.name === template.name) || added.find((item) => item.name === template.name);
+                if (existing) {
+                  Object.assign(existing, {
+                    name: template.name,
+                    desc: template.desc,
+                    tags: template.tags,
+                    thumbnail: template.thumbnail,
+                    project: template.project,
+                    updatedAt: new Date().toISOString(),
+                  });
+                  overwritten++;
+                } else {
+                  skipped++;
+                }
+              } else {
+                skipped++;
+              }
+            }
+            return { added, overwritten, skipped };
+          },
+
+          importLocal: async function (files) {
+            const fileList = files && typeof files.length === "number" ? Array.from(files) : files ? [files] : [];
+            if (!fileList.length) return;
+            const pending = [];
+            let failed = 0;
+            for (const file of fileList) {
+              try {
+                const data = JSON.parse(await file.text());
+
+                if (data.format === "PaperStudioTemplatePack" && Array.isArray(data.templates)) {
+                  data.templates
+                    .filter((template) => template && template.project?.canvasData && template.project?.settings)
+                    .forEach((template) => {
+                      pending.push(this._toLocalTemplate(template.name, template.desc, template.tags, template.thumbnail, template.project));
+                    });
+                  continue;
+                }
+
+                if (data.settings && data.canvasData) {
+                  const baseName = String(file.name || "").replace(/\.paper$/i, "").trim() || "未命名模板";
+                  const project = JSON.parse(JSON.stringify(data));
+                  project.dataSource = null;
+                  pending.push(this._toLocalTemplate(baseName, "从 .paper 文件导入的模板", [], project.thumbnail, project));
+                  continue;
+                }
+
+                failed++;
+              } catch (error) {
+                console.error(error);
+                failed++;
+              }
+            }
+
+            if (!pending.length) {
+              Utils.toast(failed ? `导入失败：${failed} 个文件无效` : "没有可导入的模板", "error");
+              return;
+            }
+
+            const { added, overwritten, skipped } = this._resolveConflicts(pending);
+            if (!added.length && !overwritten) {
+              Utils.toast(skipped ? `已取消 ${skipped} 个重名模板` : "没有可导入的模板", "info");
+              return;
+            }
+            if (added.length) this.localData.unshift(...added);
+            await this._persistLocal();
+            this.render();
+            const parts = [];
+            if (added.length) parts.push(`已导入 ${added.length} 个模板`);
+            if (overwritten) parts.push(`覆盖 ${overwritten} 个已有模板`);
+            if (skipped) parts.push(`跳过 ${skipped} 个模板`);
+            if (failed) parts.push(`跳过 ${failed} 个无效文件`);
+            Utils.toast(parts.join("，"), "success");
           },
 
           load: async function (id) {
