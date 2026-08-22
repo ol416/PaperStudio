@@ -975,11 +975,7 @@
               await idbKeyval.set(this.storageKey, list);
               this.lastSavedAt = Date.now();
               this._pendingList = list;
-              this._syncFab();
-              const panel = document.getElementById("draftPanel");
-              if (panel && !panel.classList.contains("hidden")) {
-                this.renderList();
-              }
+              this.renderList();
             } catch (e) {
               console.error("自动保存草稿失败", e);
             }
@@ -989,10 +985,10 @@
             try {
               const stored = await idbKeyval.get(this.storageKey);
               if (Array.isArray(stored)) {
-                return stored.filter((d) => d && d.canvasData && d.settings);
+                return stored.filter((d) => d && d.canvasData && d.canvasData.objects && d.settings);
               }
               // 兼容旧版单草稿格式，自动迁移为数组
-              if (stored && stored.canvasData && stored.settings) return [stored];
+              if (stored && stored.canvasData && stored.canvasData.objects && stored.settings) return [stored];
             } catch (e) {}
             return [];
           },
@@ -1005,18 +1001,15 @@
             }
             this.lastSavedAt = null;
             this._pendingList = [];
-            this.closePanel();
-            this._syncFab();
+            this.renderList();
             idbKeyval.del(this.storageKey).catch(() => {});
           },
 
+          // 仅加载并更新入口角标，不再自动弹出；由用户通过头部"草稿箱"主动打开
           checkDraft: async function () {
             try {
-              const list = await this._loadList();
-              if (!list.length) return;
-              this._pendingList = list;
+              this._pendingList = await this._loadList();
               this.renderList();
-              this.showPanel();
             } catch (e) {
               console.error("读取草稿失败", e);
             }
@@ -1024,21 +1017,21 @@
 
           showPanel: function () {
             if (Array.isArray(this._pendingList) && this._pendingList.length) this.renderList();
-            const panel = document.getElementById("draftPanel");
-            if (panel) panel.classList.remove("hidden");
             this._syncFab();
           },
 
-          closePanel: function () {
-            const panel = document.getElementById("draftPanel");
-            if (panel) panel.classList.add("hidden");
-          },
+          closePanel: function () {},
 
           _syncFab: function () {
-            const fab = document.getElementById("draftFab");
-            if (!fab) return;
             const count = Array.isArray(this._pendingList) ? this._pendingList.length : 0;
-            fab.classList.toggle("hidden", count === 0);
+            const btnCount = document.getElementById("draftBtnCount");
+            if (btnCount) {
+              btnCount.textContent = count;
+              btnCount.classList.toggle("hidden", count === 0);
+            }
+            // 兼容旧版悬浮按钮（若 DOM 仍存在）
+            const fab = document.getElementById("draftFab");
+            if (fab) fab.classList.toggle("hidden", count === 0);
             const badge = document.getElementById("draftFabCount");
             if (badge) badge.textContent = count;
           },
@@ -1047,9 +1040,11 @@
             const container = document.getElementById("draftList");
             if (!container) return;
             container.innerHTML = "";
+            const emptyEl = document.getElementById("draftEmpty");
+            if (emptyEl) emptyEl.classList.toggle("hidden", this._pendingList.length > 0);
             this._pendingList.forEach((draft, index) => {
               const timeText = draft.timestamp ? new Date(draft.timestamp).toLocaleString() : "未知时间";
-              const count = (draft.canvasData.objects || []).length;
+              const count = draft.canvasData && draft.canvasData.objects ? draft.canvasData.objects.length : 0;
               const thumb = draft.thumbnail && String(draft.thumbnail).startsWith("data:image/")
                 ? `<img src="${draft.thumbnail}" alt="" class="h-10 w-10 rounded object-contain border border-gray-200 bg-white shrink-0" />`
                 : "";
@@ -1069,13 +1064,17 @@
               container.appendChild(row);
             });
             const hint = document.getElementById("draftLimitHint");
-            if (hint) hint.textContent = `共 ${this._pendingList.length} 份，最多保留 ${this.maxDrafts} 份（超出自动删除最旧）`;
+            if (hint) {
+              hint.textContent = this._pendingList.length
+                ? `共 ${this._pendingList.length} 份，最多保留 ${this.maxDrafts} 份（超出自动删除最旧）`
+                : "";
+            }
+            this._syncFab();
           },
 
           restore: function (index) {
             const draft = this._pendingList?.[index];
-            if (!draft) return;
-            this.closePanel();
+            if (!draft || !draft.canvasData || !draft.settings) return;
             App.ui.showLoading("正在恢复草稿...");
             App.io.loadProjectData(draft, { markUnsaved: true });
           },
@@ -1084,12 +1083,7 @@
             if (!this._pendingList || !this._pendingList[index]) return;
             this._pendingList.splice(index, 1);
             await idbKeyval.set(this.storageKey, this._pendingList);
-            this._syncFab();
-            if (this._pendingList.length) {
-              this.renderList();
-            } else {
-              this.closePanel();
-            }
+            this.renderList();
             Utils.toast("草稿已删除");
           },
 
@@ -1097,6 +1091,139 @@
             if (!window.confirm("确定清空所有未保存草稿吗？")) return;
             this.clear();
             Utils.toast("草稿已清空");
+          },
+        },
+
+        recent: {
+          storageKey: "paperstudio:recent:v1",
+          maxItems: 8,
+          maxBytes: 8 * 1024 * 1024, // 单个项目超过 8MB 不记录，避免撑大 IndexedDB
+          _list: [],
+
+          init: async function () {
+            try {
+              const stored = await idbKeyval.get(this.storageKey);
+              this._list = Array.isArray(stored)
+                ? stored.filter((r) => r && typeof r.name === "string" && r.data && (r.data.settings || r.data.canvasData))
+                : [];
+            } catch (e) {
+              console.warn("读取最近项目失败", e);
+              this._list = [];
+            }
+            this.render();
+          },
+
+          _persist: async function () {
+            try {
+              await idbKeyval.set(this.storageKey, this._list);
+            } catch (e) {
+              console.error("保存最近项目失败", e);
+            }
+          },
+
+          // 打开/保存工程后调用：同名去重并置顶，超出上限删除最旧
+          add: async function (name, data) {
+            if (!name || !data || (!data.settings && !data.canvasData)) return;
+            const label = String(name).replace(/\.paper$/i, "") + ".paper";
+            let size = 0;
+            try {
+              size = new TextEncoder().encode(JSON.stringify(data)).length;
+            } catch (e) {
+              return;
+            }
+            if (size > this.maxBytes) {
+              Utils.toast("项目较大，未加入最近打开", "info");
+              return;
+            }
+            this._list = [{ name: label, timestamp: Date.now(), size, data }, ...this._list.filter((r) => r.name !== label)];
+            if (this._list.length > this.maxItems) this._list.length = this.maxItems;
+            await this._persist();
+            this.render();
+          },
+
+          open: async function (index) {
+            const item = this._list[index];
+            if (!item) return;
+            // 置顶并更新时间
+            this._list = [{ ...item, timestamp: Date.now() }, ...this._list.filter((_, i) => i !== index)];
+            await this._persist();
+            this.render();
+            App.ui.showLoading("正在打开最近项目...");
+            App.io.loadProjectData(item.data, { markUnsaved: true });
+          },
+
+          remove: async function (index) {
+            if (!this._list[index]) return;
+            this._list.splice(index, 1);
+            await this._persist();
+            this.render();
+          },
+
+          clear: async function () {
+            if (!this._list.length) return;
+            if (!window.confirm("确定清空最近打开记录吗？")) return;
+            this._list = [];
+            await this._persist();
+            this.render();
+            Utils.toast("最近记录已清空");
+          },
+
+          render: function () {
+            const listEl = document.getElementById("recentList");
+            if (!listEl) return;
+            listEl.innerHTML = "";
+            const emptyEl = document.getElementById("recentEmpty");
+            if (emptyEl) emptyEl.classList.toggle("hidden", this._list.length > 0);
+            const clearBtn = document.getElementById("recentClearBtn");
+            if (clearBtn) clearBtn.classList.toggle("hidden", this._list.length === 0);
+
+            this._list.forEach((item, i) => {
+              const row = document.createElement("div");
+              row.className = "recent-row";
+              row.title = item.name;
+
+              const icon = document.createElement("i");
+              icon.className = "ph ph-file-text text-base text-slate-400 shrink-0";
+
+              const info = document.createElement("div");
+              info.className = "flex-1 min-w-0";
+              const nameEl = document.createElement("div");
+              nameEl.className = "truncate text-xs font-medium text-slate-700";
+              nameEl.textContent = item.name;
+              const timeEl = document.createElement("div");
+              timeEl.className = "text-[10px] text-slate-400";
+              timeEl.textContent = item.timestamp ? this._timeText(item.timestamp) : "";
+              info.append(nameEl, timeEl);
+
+              const openBtn = document.createElement("button");
+              openBtn.className = "shrink-0 px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 text-xs font-medium";
+              openBtn.textContent = "打开";
+              openBtn.onclick = () => this.open(i);
+
+              const delBtn = document.createElement("button");
+              delBtn.className = "shrink-0 p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition";
+              delBtn.title = "从最近记录移除";
+              delBtn.innerHTML = '<i class="ph ph-x text-xs"></i>';
+              delBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.remove(i);
+              };
+
+              row.append(icon, info, openBtn, delBtn);
+              listEl.appendChild(row);
+            });
+          },
+
+          _timeText: function (ts) {
+            const diff = Date.now() - ts;
+            const min = Math.floor(diff / 60000);
+            if (min < 1) return "刚刚";
+            if (min < 60) return `${min} 分钟前`;
+            const hour = Math.floor(min / 60);
+            if (hour < 24) return `${hour} 小时前`;
+            const day = Math.floor(hour / 24);
+            if (day < 7) return `${day} 天前`;
+            return new Date(ts).toLocaleDateString();
           },
         },
 
@@ -7344,15 +7471,17 @@
           saveProject: function () {
             const snapshot = App.project.buildSnapshot({ includeDataSource: true });
             const typeLabel = App.paper.defaults[snapshot.settings.type]?.label || "设计稿";
+            const fileName = `${typeLabel}_${Date.now()}.paper`;
             const blob = new Blob([JSON.stringify(snapshot)], { type: "application/json" });
             const a = document.createElement("a");
             a.href = URL.createObjectURL(blob);
-            a.download = `${typeLabel}_${Date.now()}.paper`;
+            a.download = fileName;
             a.click();
             URL.revokeObjectURL(a.href);
             Utils.toast("项目已保存");
             App.state.hasUnsavedChanges = false;
             App.draft.clear();
+            App.recent.add(fileName, snapshot);
           },
 
           loadProjectData: function (data, opts = {}) {
@@ -7506,7 +7635,9 @@
             const r = new FileReader();
             r.onload = (e) => {
               try {
-                this.loadProjectData(JSON.parse(e.target.result));
+                const data = JSON.parse(e.target.result);
+                this.loadProjectData(data);
+                App.recent.add(file.name, data);
               } catch {
                 Utils.toast("文件格式错误", "error");
               } finally {
@@ -8731,6 +8862,7 @@
         App.init();
         App.draft.ready = true;
         App.draft.checkDraft();
+        App.recent.init();
         const propFontSelect = document.getElementById('propFont');
         const propFontContainer = document.getElementById('propFontPicker');
         if (propFontSelect && propFontContainer) {
@@ -8744,4 +8876,4 @@
         if (floatFontSelect && floatFontContainer) {
           FontPicker.create(floatFontContainer, floatFontSelect, null);
         }
-      };
+      };

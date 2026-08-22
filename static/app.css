@@ -152,6 +152,42 @@
         font-size: 13px;
       }
 
+      /* 最近打开下拉菜单 */
+      .recent-menu {
+        width: 300px;
+        left: 0;
+        padding: 0.4rem;
+      }
+
+      .recent-list {
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
+      .recent-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 8px;
+      }
+
+      .recent-row:hover {
+        background-color: #f9fafb;
+      }
+
+      /* 草稿箱下拉菜单 */
+      .draft-menu {
+        width: 300px;
+        left: 0;
+        padding: 0.4rem;
+      }
+
+      .draft-list {
+        max-height: 320px;
+        overflow-y: auto;
+      }
+
       /* 导出按钮：主按钮单击打印，箭头按钮点击展开导出菜单（不使用 hover） */
       .dropdown.export-dropdown:hover > .dropdown-menu {
         display: none;
@@ -539,4 +575,4 @@
           height: auto;
           display: block;
         }
-      }
+      }
