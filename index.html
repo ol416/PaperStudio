@@ -186,6 +186,101 @@
         </div>
       </div>
     </div>
+    <div id="findReplaceModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+      <div class="bg-white rounded-xl shadow-2xl p-6 w-[560px] relative">
+        <button
+          onclick="App.findReplace.close()"
+          class="absolute top-3 right-3 text-slate-400 hover:text-slate-600 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition">
+          <i class="ph ph-x text-lg"></i>
+        </button>
+
+        <h3 class="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2">
+          <i class="ph ph-magnifying-glass text-red-500 text-xl"></i> 查找替换
+        </h3>
+        <p class="text-sm text-slate-400 mb-4">在整个画布中查找替换文本或字体，支持表格单元格</p>
+
+        <div class="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1">
+          <button id="frModeTextBtn" type="button" onclick="App.findReplace.setMode('text')" class="flex-1 py-1.5 rounded-md text-sm font-medium bg-white shadow-sm text-slate-800 transition">替换文本</button>
+          <button id="frModeFontBtn" type="button" onclick="App.findReplace.setMode('font')" class="flex-1 py-1.5 rounded-md text-sm font-medium text-slate-500 transition">替换字体</button>
+        </div>
+
+        <div id="frTextPanel" class="space-y-3">
+          <div>
+            <label class="compact-label">查找内容</label>
+            <div class="relative">
+              <input type="text" id="frFind" class="w-full compact-input border rounded px-2 py-1.5" placeholder="点击或输入，从当前画布文本中搜索…" autocomplete="off" />
+              <div id="frSuggest" class="hidden absolute left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 max-h-44 overflow-y-auto custom-scrollbar"></div>
+            </div>
+          </div>
+          <div>
+            <label class="compact-label">替换为</label>
+            <input type="text" id="frReplace" class="w-full compact-input border rounded px-2 py-1.5" placeholder="留空表示删除匹配内容" />
+          </div>
+          <div class="flex gap-5 pt-0.5">
+            <label class="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none">
+              <input type="checkbox" id="frMatchCase" class="accent-red-600 rounded" />
+              区分大小写
+            </label>
+            <label class="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer select-none">
+              <input type="checkbox" id="frWholeWord" class="accent-red-600 rounded" />
+              全字匹配
+            </label>
+          </div>
+        </div>
+
+        <div id="frFontPanel" class="hidden space-y-3">
+          <div>
+            <label class="compact-label">查找字体</label>
+            <div class="font-select-wrapper" id="frFontFromPicker"></div>
+            <select id="frFontFrom" class="hidden">
+              <option value="SourceHanSansCN">思源黑体</option>
+              <option value="SourceHanSerifCN-Bold">思源宋体</option>
+              <option value="SimSun">宋体</option>
+              <option value="KaiTi">楷体</option>
+              <option value="SimHei">黑体</option>
+              <option value="FangSong">仿宋</option>
+              <option value="Arial">Arial</option>
+              <option value="'Times New Roman'">Times New Roman</option>
+            </select>
+          </div>
+          <div>
+            <label class="compact-label">替换为字体</label>
+            <div class="font-select-wrapper" id="frFontToPicker"></div>
+            <select id="frFontTo" class="hidden">
+              <option value="SourceHanSansCN">思源黑体</option>
+              <option value="SourceHanSerifCN-Bold">思源宋体</option>
+              <option value="SimSun">宋体</option>
+              <option value="KaiTi">楷体</option>
+              <option value="SimHei">黑体</option>
+              <option value="FangSong">仿宋</option>
+              <option value="Arial">Arial</option>
+              <option value="'Times New Roman'">Times New Roman</option>
+            </select>
+          </div>
+          <p class="text-xs text-slate-400">查找字体仅列出当前模板已用字体；替换字体优先显示模板已用字体。同时作用于文本对象与表格单元格。</p>
+        </div>
+
+        <div class="mt-4">
+          <button type="button" onclick="App.findReplace.find()" class="px-3 py-1.5 rounded-lg border border-gray-300 text-slate-600 hover:bg-gray-50 text-sm transition">查找</button>
+        </div>
+
+        <div id="frResult" class="hidden mt-3">
+          <p id="frResultText" class="text-sm text-slate-600"></p>
+          <div id="frMatchList" class="mt-2 max-h-44 overflow-y-auto custom-scrollbar border border-gray-100 rounded-lg divide-y divide-gray-50"></div>
+          <div class="flex items-center justify-between mt-2">
+            <span id="frSelectedHint" class="text-xs text-slate-400"></span>
+            <button id="frReplaceSelectedBtn" type="button" onclick="App.findReplace.replaceSelected()" disabled class="px-3 py-1.5 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed">替换选中</button>
+          </div>
+        </div>
+
+        <div class="flex gap-3 justify-end mt-6">
+          <button onclick="App.findReplace.close()" class="px-4 py-2 rounded-lg border border-gray-300 text-slate-600 hover:bg-gray-50 text-sm transition">关闭</button>
+          <button onclick="App.findReplace.replaceAll()" class="px-4 py-2 rounded-lg bg-red-600 text-white hover:bg-red-700 text-sm font-bold shadow-md shadow-red-100 transition flex items-center gap-2">
+            <i class="ph ph-arrows-clockwise text-lg"></i> 全部替换
+          </button>
+        </div>
+      </div>
+    </div>
     <div id="tableModal" class="hidden fixed inset-0 z-50 items-center justify-center modal-backdrop">
       <div class="bg-white w-[98vw] h-[95vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 z-20 bg-white shadow-sm shrink-0">
@@ -458,6 +553,12 @@
             class="hover:bg-gray-100 px-2 py-1 rounded font-medium flex items-center gap-1 transition text-slate-600 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
             title="重做 (Ctrl+Y)">
             <i class="ph ph-arrow-u-up-right text-lg"></i>
+          </button>
+          <button
+            onclick="App.findReplace.open()"
+            class="hover:bg-gray-100 px-2 py-1 rounded font-medium flex items-center gap-1 transition text-slate-600"
+            title="查找替换 (Ctrl+F)">
+            <i class="ph ph-magnifying-glass text-lg"></i>
           </button>
         </div>
       </div>

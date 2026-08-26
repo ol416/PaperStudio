@@ -3753,6 +3753,7 @@
             bindModalClose("contactModal");
             bindModalClose("sponsorModal");
             bindModalClose("pngExportModal");
+            bindModalClose("findReplaceModal");
             document.addEventListener("fullscreenchange", () => {
               const icon = document.getElementById("fsIcon");
               if (icon) {
@@ -3808,6 +3809,12 @@
             hotkeys("ctrl+p,command+p", (e) => {
               e.preventDefault();
               App.io.print();
+            });
+            hotkeys("ctrl+f,command+f", (e) => {
+              if (!isInput()) {
+                e.preventDefault();
+                App.findReplace.open();
+              }
             });
             hotkeys("del,backspace", (e) => {
               if (!isInput()) {
@@ -3873,7 +3880,7 @@
               }, 100);
             }
 
-            const targetIds = ["propFont", "floatFontFamily"];
+            const targetIds = ["propFont", "floatFontFamily", "frFontFrom", "frFontTo"];
             targetIds.forEach((id) => {
               const select = document.getElementById(id);
               if (!select) return;
@@ -7129,6 +7136,571 @@
               .requestRenderAll();
             this.updateInspector();
             App.history.saveState();
+          },
+        },
+
+        // --- 查找替换 (全画布批量操作) ---
+        findReplace: {
+          _mode: "text",
+          _fontPickersReady: false,
+          _suggestBound: false,
+          _suggestions: [],
+          _resultMatches: [],
+          _selectedIndices: new Set(),
+
+          open: function () {
+            this.ensureFontPickers();
+            this._refreshUsedFonts();
+            this._refreshSuggestions();
+            this._bindSuggestEvents();
+            this.setMode(this._mode);
+            App.ui.showModal("findReplaceModal");
+            setTimeout(() => {
+              const el = document.getElementById("frFind");
+              if (el) el.focus();
+            }, 50);
+          },
+
+          close: function () {
+            App.ui.hideModal("findReplaceModal");
+          },
+
+          setMode: function (mode) {
+            this._mode = mode === "font" ? "font" : "text";
+            if (this._mode === "font") this._refreshUsedFonts();
+            else this._refreshSuggestions();
+            const textPanel = document.getElementById("frTextPanel");
+            const fontPanel = document.getElementById("frFontPanel");
+            const textBtn = document.getElementById("frModeTextBtn");
+            const fontBtn = document.getElementById("frModeFontBtn");
+            if (textPanel) textPanel.classList.toggle("hidden", this._mode !== "text");
+            if (fontPanel) fontPanel.classList.toggle("hidden", this._mode !== "font");
+            if (textBtn) {
+              textBtn.classList.toggle("bg-white", this._mode === "text");
+              textBtn.classList.toggle("shadow-sm", this._mode === "text");
+              textBtn.classList.toggle("text-slate-800", this._mode === "text");
+              textBtn.classList.toggle("text-slate-500", this._mode !== "text");
+            }
+            if (fontBtn) {
+              fontBtn.classList.toggle("bg-white", this._mode === "font");
+              fontBtn.classList.toggle("shadow-sm", this._mode === "font");
+              fontBtn.classList.toggle("text-slate-800", this._mode === "font");
+              fontBtn.classList.toggle("text-slate-500", this._mode !== "font");
+            }
+            this.clearResult();
+          },
+
+          ensureFontPickers: function () {
+            if (this._fontPickersReady || typeof FontPicker === "undefined") return;
+            const source = document.getElementById("propFont");
+            ["frFontFrom", "frFontTo"].forEach((id) => {
+              const select = document.getElementById(id);
+              const container = document.getElementById(id + "Picker");
+              if (!select || !container) return;
+              if (source) {
+                const seen = new Set([...select.options].map((o) => o.value));
+                [...source.options].forEach((o) => {
+                  if (!seen.has(o.value)) {
+                    const opt = new Option(o.text, o.value);
+                    opt.style.fontFamily = o.style.fontFamily || "";
+                    select.add(opt);
+                    seen.add(o.value);
+                  }
+                });
+              }
+              FontPicker.create(container, select, null);
+            });
+            this._fontPickersReady = true;
+          },
+
+          clearResult: function () {
+            const resultEl = document.getElementById("frResult");
+            if (resultEl) resultEl.classList.add("hidden");
+            this._resultMatches = [];
+            this._selectedIndices.clear();
+            this._updateSelectedUI();
+          },
+
+          _bindSuggestEvents: function () {
+            const input = document.getElementById("frFind");
+            const list = document.getElementById("frSuggest");
+            if (!input || !list || this._suggestBound) return;
+            this._suggestBound = true;
+            let activeIdx = -1;
+            input.addEventListener("input", () => {
+              activeIdx = -1;
+              this._renderSuggestions(input.value);
+            });
+            input.addEventListener("focus", () => this._renderSuggestions(input.value));
+            input.addEventListener("keydown", (e) => {
+              const hidden = list.classList.contains("hidden");
+              const items = list.querySelectorAll("button");
+              if (e.key === "Escape") {
+                list.classList.add("hidden");
+                activeIdx = -1;
+              } else if (e.key === "ArrowDown" && !hidden && items.length) {
+                e.preventDefault();
+                activeIdx = Math.min(activeIdx + 1, items.length - 1);
+                this._highlightSuggest(items, activeIdx);
+              } else if (e.key === "ArrowUp" && !hidden && items.length) {
+                e.preventDefault();
+                activeIdx = Math.max(activeIdx - 1, 0);
+                this._highlightSuggest(items, activeIdx);
+              } else if (e.key === "Enter") {
+                if (!hidden && activeIdx >= 0 && items[activeIdx]) {
+                  e.preventDefault();
+                  this._pickSuggestion(items[activeIdx].dataset.value || "");
+                } else {
+                  list.classList.add("hidden");
+                  this.find();
+                }
+              }
+            });
+            document.addEventListener("click", (e) => {
+              if (list.contains(e.target) || e.target === input) return;
+              list.classList.add("hidden");
+            });
+          },
+
+          _highlightSuggest: function (items, idx) {
+            items.forEach((el, i) => el.classList.toggle("bg-gray-100", i === idx));
+            if (items[idx]) items[idx].scrollIntoView({ block: "nearest" });
+          },
+
+          _renderSuggestions: function (query) {
+            const list = document.getElementById("frSuggest");
+            if (!list) return;
+            const q = (query || "").trim().toLowerCase();
+            const items = this._suggestions.filter((s) => !q || s.toLowerCase().includes(q)).slice(0, 60);
+            if (!items.length) {
+              list.classList.add("hidden");
+              return;
+            }
+            list.innerHTML = "";
+            items.forEach((s) => {
+              const row = document.createElement("button");
+              row.type = "button";
+              row.dataset.value = s;
+              row.className = "w-full text-left px-3 py-1.5 text-sm text-slate-700 hover:bg-gray-50 truncate";
+              row.textContent = s;
+              row.addEventListener("mousedown", (e) => {
+                e.preventDefault();
+                this._pickSuggestion(s);
+              });
+              list.appendChild(row);
+            });
+            list.classList.remove("hidden");
+          },
+
+          _pickSuggestion: function (s) {
+            const input = document.getElementById("frFind");
+            if (input) input.value = s;
+            const list = document.getElementById("frSuggest");
+            if (list) list.classList.add("hidden");
+            this.find();
+          },
+
+          _refreshSuggestions: function () {
+            const seen = new Set();
+            const arr = [];
+            this._collectTargets().forEach((t) => {
+              if (t.isAutoGenerated) return;
+              const s = String(t.getText() || "").trim();
+              if (s && !seen.has(s)) {
+                seen.add(s);
+                arr.push(s);
+              }
+            });
+            arr.sort((a, b) => a.length - b.length || a.localeCompare(b));
+            this._suggestions = arr.slice(0, 200);
+            const list = document.getElementById("frSuggest");
+            if (list) list.classList.add("hidden");
+          },
+
+          _refreshUsedFonts: function () {
+            const used = [];
+            const seen = new Set();
+            this._collectTargets().forEach((t) => {
+              const f = String(t.getFont() || "").trim();
+              if (f && !seen.has(f)) {
+                seen.add(f);
+                used.push(f);
+              }
+            });
+            const from = document.getElementById("frFontFrom");
+            const to = document.getElementById("frFontTo");
+            if (from) {
+              const prev = from.value;
+              from.innerHTML = "";
+              if (!used.length) {
+                from.add(new Option("（当前画布暂无字体）", ""));
+              } else {
+                used.forEach((f) => from.add(new Option(f, f)));
+                if ([...from.options].some((o) => o.value === prev)) from.value = prev;
+              }
+              if (typeof FontPicker !== "undefined") {
+                FontPicker.refresh(from);
+                if (from.value) FontPicker.setValue(from, from.value);
+              }
+            }
+            if (to) {
+              const prev = to.value;
+              to.innerHTML = "";
+              const seenVals = new Set();
+              used.forEach((f) => {
+                to.add(new Option(f, f));
+                seenVals.add(f);
+              });
+              if (used.length) to.add(new Option("--- 模板已用字体 ---", "---sep---"));
+              const src = document.getElementById("propFont");
+              if (src) {
+                [...src.options].forEach((o) => {
+                  if (o.value === "---sep---" || seenVals.has(o.value)) return;
+                  const opt = new Option(o.text, o.value);
+                  opt.style.fontFamily = o.style.fontFamily || "";
+                  to.add(opt);
+                  seenVals.add(o.value);
+                });
+              }
+              if ([...to.options].some((o) => o.value === prev)) to.value = prev;
+              if (typeof FontPicker !== "undefined") {
+                FontPicker.refresh(to);
+                if (to.value) FontPicker.setValue(to, to.value);
+              }
+            }
+          },
+
+          _updateSelectedUI: function () {
+            const btn = document.getElementById("frReplaceSelectedBtn");
+            const hint = document.getElementById("frSelectedHint");
+            if (btn) btn.disabled = this._selectedIndices.size === 0;
+            if (hint) hint.textContent = this._selectedIndices.size > 0 ? `已勾选 ${this._selectedIndices.size} 个目标` : "";
+          },
+
+          _getOptions: function () {
+            return {
+              matchCase: !!document.getElementById("frMatchCase")?.checked,
+              wholeWord: !!document.getElementById("frWholeWord")?.checked,
+            };
+          },
+
+          _buildRegex: function (find, opts) {
+            const esc = String(find).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const needle = opts.wholeWord ? `(?<![\\p{L}\\p{N}_])${esc}(?![\\p{L}\\p{N}_])` : esc;
+            return new RegExp(needle, opts.matchCase ? "gu" : "giu");
+          },
+
+          _countMatches: function (text, find, opts) {
+            const re = this._buildRegex(find, opts);
+            let n = 0;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+              n++;
+              if (m.index === re.lastIndex) re.lastIndex++;
+            }
+            return n;
+          },
+
+          _replaceInString: function (text, find, replacement, opts) {
+            return String(text).replace(this._buildRegex(find, opts), () => replacement);
+          },
+
+          _fontEqual: function (a, b) {
+            return String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+          },
+
+          _snippet: function (text, find, opts) {
+            text = String(text);
+            const idx = opts.matchCase ? text.indexOf(find) : text.toLowerCase().indexOf(find.toLowerCase());
+            if (idx === -1) return text.slice(0, 30);
+            const start = Math.max(0, idx - 8);
+            const end = Math.min(text.length, start + 36);
+            return (start > 0 ? "…" : "") + text.slice(start, end) + (end < text.length ? "…" : "");
+          },
+
+          _escapeHtml: function (s) {
+            return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+          },
+
+          _collectTargets: function () {
+            const targets = [];
+            const seenObjects = new Set();
+            const visit = (list) => {
+              list.forEach((o) => {
+                if (!o || o.isBarcode || o.isGrid) return;
+                if (o.type === "group" && o._objects && !o.isTable) {
+                  visit(o._objects);
+                  return;
+                }
+                if (["i-text", "textbox", "text"].includes(o.type)) {
+                  let obj = o;
+                  if (o.syncMode === "ref" && o.refId) {
+                    const parent = App.content.findObjectBySharedId(o.refId);
+                    if (parent) obj = parent;
+                  }
+                  if (seenObjects.has(obj)) return;
+                  seenObjects.add(obj);
+                  targets.push({
+                    kind: "object",
+                    obj,
+                    isAutoGenerated: !!(obj.isDynamicDate || obj.isDynamicPageNum || obj.isSerialNumber),
+                    getText: () => String(obj.rawContent !== undefined ? obj.rawContent : obj.text || ""),
+                    setText: (v) => {
+                      obj.rawContent = v;
+                      App.content.render(obj);
+                    },
+                    getFont: () => obj.fontFamily || "",
+                    setFont: (v) => obj.set("fontFamily", v),
+                  });
+                }
+                if (o.isTable && o.tableData) {
+                  o.tableData.cells.forEach((row) => {
+                    row.forEach((cell) => {
+                      if (!cell) return;
+                      targets.push({
+                        kind: "tableCell",
+                        table: o,
+                        cell,
+                        getText: () => String(cell.text || ""),
+                        setText: (v) => {
+                          cell.text = v;
+                        },
+                        getFont: () => cell.fontFamily || "",
+                        setFont: (v) => {
+                          cell.fontFamily = v;
+                        },
+                      });
+                    });
+                  });
+                }
+              });
+            };
+            visit(App.canvas.getObjects());
+            return targets;
+          },
+
+          find: function () {
+            const resultEl = document.getElementById("frResult");
+            const resultText = document.getElementById("frResultText");
+            const listEl = document.getElementById("frMatchList");
+            if (!resultEl || !resultText || !listEl) return;
+            this.clearResult();
+
+            if (this._mode === "text") {
+              const find = document.getElementById("frFind").value;
+              if (!find) {
+                resultEl.classList.remove("hidden");
+                resultText.textContent = "请输入查找内容";
+                listEl.innerHTML = "";
+                return;
+              }
+              const opts = this._getOptions();
+              const targets = this._collectTargets().filter((t) => !t.isAutoGenerated);
+              let total = 0;
+              const matches = [];
+              targets.forEach((t) => {
+                const n = this._countMatches(t.getText(), find, opts);
+                if (n > 0) {
+                  total += n;
+                  matches.push({ target: t, count: n, snippet: this._snippet(t.getText(), find, opts) });
+                }
+              });
+              this._renderResult(resultEl, resultText, listEl, total, matches);
+            } else {
+              const from = document.getElementById("frFontFrom").value;
+              if (!from) {
+                resultEl.classList.remove("hidden");
+                resultText.textContent = "请选择查找字体";
+                listEl.innerHTML = "";
+                return;
+              }
+              const matches = this._collectTargets()
+                .filter((t) => this._fontEqual(t.getFont(), from))
+                .map((t) => ({
+                  target: t,
+                  count: 1,
+                  snippet: t.getText().slice(0, 28) || (t.kind === "tableCell" ? "表格单元格" : "文本对象"),
+                }));
+              this._renderResult(resultEl, resultText, listEl, matches.length, matches);
+            }
+          },
+
+          _renderResult: function (resultEl, resultText, listEl, total, matches) {
+            resultEl.classList.remove("hidden");
+            this._resultMatches = matches;
+            this._selectedIndices.clear();
+            this._updateSelectedUI();
+            const tableCells = matches.filter((m) => m.target.kind === "tableCell").length;
+            resultText.textContent = `找到 ${total} 处匹配（${matches.length} 个目标${tableCells ? `，其中 ${tableCells} 个为表格单元格` : ""}），勾选后可按目标替换`;
+            listEl.innerHTML = "";
+            const MAX = 200;
+            matches.slice(0, MAX).forEach((m, mi) => {
+              const row = document.createElement("div");
+              row.className = "w-full text-left px-3 py-2 hover:bg-gray-50 flex items-center gap-2 transition cursor-pointer select-none";
+              const cb = document.createElement("input");
+              cb.type = "checkbox";
+              cb.className = "accent-red-600 rounded shrink-0";
+              cb.addEventListener("change", () => {
+                if (cb.checked) this._selectedIndices.add(mi);
+                else this._selectedIndices.delete(mi);
+                this._updateSelectedUI();
+              });
+              row.innerHTML =
+                `<i class="ph ${m.target.kind === "tableCell" ? "ph-table" : "ph-text-t"} text-slate-400 text-sm shrink-0"></i>` +
+                `<span class="text-[11px] text-slate-400 w-9 shrink-0">${m.target.kind === "tableCell" ? "单元格" : "文本"}</span>` +
+                `<span class="text-sm text-slate-700 truncate flex-1">${this._escapeHtml(m.snippet)}</span>` +
+                (m.count > 1 ? `<span class="text-[10px] text-slate-400 shrink-0">×${m.count}</span>` : "");
+              row.prepend(cb);
+              row.addEventListener("click", (e) => {
+                if (e.target === cb) return;
+                this._locate(m.target);
+              });
+              listEl.appendChild(row);
+            });
+            if (matches.length > MAX) {
+              const more = document.createElement("div");
+              more.className = "px-3 py-2 text-xs text-slate-400";
+              more.textContent = `还有 ${matches.length - MAX} 项未显示`;
+              listEl.appendChild(more);
+            }
+          },
+
+          _locate: function (target) {
+            let obj = target.kind === "tableCell" ? target.table : target.obj;
+            if (!obj) return;
+            while (obj.group) obj = obj.group;
+            if (App.canvas.getObjects().indexOf(obj) === -1) return;
+            App.canvas.discardActiveObject();
+            App.canvas.setActiveObject(obj);
+            App.canvas.requestRenderAll();
+            App.ui.updateInspector();
+          },
+
+          _rebuildTable: function (table) {
+            if (!table || !table.isTable) return;
+            const center = table.getCenterPoint();
+            const preserved = {
+              angle: table.angle,
+              scaleX: table.scaleX,
+              scaleY: table.scaleY,
+              opacity: table.opacity,
+            };
+            const newGroup = App.tableEditor.buildFabricTable(table.tableData);
+            newGroup.set({ left: center.x, top: center.y, ...preserved });
+            const idx = App.canvas.getObjects().indexOf(table);
+            const wasActive = App.canvas.getActiveObject() === table;
+            const wasEditing = App.tableEditor.state && App.tableEditor.state.editingTarget === table;
+            App.canvas.remove(table);
+            App.canvas.insertAt(newGroup, idx >= 0 ? idx : undefined, true);
+            if (wasActive) App.canvas.setActiveObject(newGroup);
+            if (wasEditing) App.tableEditor.state.editingTarget = newGroup;
+          },
+
+          _applyReplacement: function (targets) {
+            if (this._mode === "text") {
+              const find = document.getElementById("frFind").value;
+              const replacement = document.getElementById("frReplace").value;
+              if (!find) return { ok: false, msg: "请输入查找内容" };
+              const opts = this._getOptions();
+              const changedTables = new Set();
+              let changed = 0;
+              const wasLocked = App.history.locked;
+              App.history.locked = true;
+              try {
+                targets.forEach((t) => {
+                  const before = t.getText();
+                  const after = this._replaceInString(before, find, replacement, opts);
+                  if (after !== before) {
+                    t.setText(after);
+                    changed++;
+                    if (t.kind === "tableCell") changedTables.add(t.table);
+                  }
+                });
+                changedTables.forEach((table) => this._rebuildTable(table));
+              } finally {
+                App.history.locked = wasLocked;
+              }
+              if (changed > 0) {
+                App.canvas.requestRenderAll();
+                App.ui.updateLayerList();
+                App.history.saveState();
+              }
+              return { ok: true, changed };
+            }
+            const from = document.getElementById("frFontFrom").value;
+            const to = document.getElementById("frFontTo").value;
+            if (!from || !to) return { ok: false, msg: "请选择查找字体和替换字体" };
+            const changedTables = new Set();
+            const changedObjects = new Set();
+            let changed = 0;
+            const wasLocked = App.history.locked;
+            App.history.locked = true;
+            try {
+              targets.forEach((t) => {
+                if (this._fontEqual(t.getFont(), from)) {
+                  t.setFont(to);
+                  changed++;
+                  if (t.kind === "tableCell") changedTables.add(t.table);
+                  else changedObjects.add(t.obj);
+                }
+              });
+              changedTables.forEach((table) => this._rebuildTable(table));
+            } finally {
+              App.history.locked = wasLocked;
+            }
+            if (changed > 0) {
+              if (changedObjects.size > 0) App.fontManager.ensureBundledFont(to);
+              App.canvas.requestRenderAll();
+              App.ui.updateLayerList();
+              App.history.saveState();
+            }
+            return { ok: true, changed };
+          },
+
+          replaceAll: function () {
+            const targets = this._mode === "text"
+              ? this._collectTargets().filter((t) => !t.isAutoGenerated)
+              : this._collectTargets();
+            const res = this._applyReplacement(targets);
+            if (!res.ok) return Utils.toast(res.msg, "info");
+            if (res.changed > 0) {
+              Utils.toast(
+                this._mode === "text"
+                  ? `已替换 ${res.changed} 处文本`
+                  : `已将 ${res.changed} 处字体替换为 ${document.getElementById("frFontTo").value}`,
+                "success",
+              );
+            } else {
+              Utils.toast(this._mode === "text" ? "没有匹配的文本" : "没有匹配的字体", "info");
+            }
+            this._clearSelection();
+            this.find();
+          },
+
+          replaceSelected: function () {
+            const idxs = [...this._selectedIndices].sort((a, b) => a - b);
+            if (!idxs.length) return Utils.toast("请先勾选要替换的匹配项", "info");
+            const targets = idxs.map((i) => this._resultMatches[i] && this._resultMatches[i].target).filter(Boolean);
+            if (!targets.length) return Utils.toast("勾选的匹配项已失效，请重新查找", "info");
+            const res = this._applyReplacement(targets);
+            if (!res.ok) return Utils.toast(res.msg, "info");
+            if (res.changed > 0) {
+              Utils.toast(
+                this._mode === "text"
+                  ? `已替换所选 ${res.changed} 处文本`
+                  : `已将所选 ${res.changed} 处字体替换为 ${document.getElementById("frFontTo").value}`,
+                "success",
+              );
+            } else {
+              Utils.toast("所选匹配项没有可替换的内容", "info");
+            }
+            this._clearSelection();
+            this.find();
+          },
+
+          _clearSelection: function () {
+            this._selectedIndices.clear();
+            this._updateSelectedUI();
           },
         },
 
