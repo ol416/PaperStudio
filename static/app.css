@@ -532,7 +532,7 @@
 
       @font-face {
         font-family: "SourceHanSerifCN-Bold";
-        src: url("./static/SourceHanSerifCN-Bold.ttf") format("truetype");
+        src: url("./SourceHanSerifCN-Bold.ttf") format("truetype");
         font-weight: normal;
         font-style: normal;
         font-display: swap;
@@ -540,7 +540,7 @@
 
       @font-face {
         font-family: "SourceHanSansCN";
-        src: url("./static/NotoSansSC-VF.ttf") format("truetype");
+        src: url("./NotoSansSC-VF.ttf") format("truetype");
         font-weight: 100 900;
         font-style: normal;
         font-display: swap;
