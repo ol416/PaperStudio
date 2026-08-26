@@ -1259,12 +1259,16 @@
               const [handle] = await window.showOpenFilePicker({
                 types: [
                   {
-                    description: "Excel Spreadsheets",
+                    description: "Excel, CSV, or Text Files",
                     accept: {
                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
                       "application/vnd.ms-excel": [".xls"],
-                    },
-                  },
+                      "text/csv": [".csv"],
+                      "application/csv": [".csv"],
+                      "text/x-csv": [".csv"],
+                      "text/plain": [".txt"]
+                    }
+                  }
                 ],
                 multiple: false,
               });
@@ -1382,15 +1386,36 @@
               }
 
               App.state.dataSource.lastModified = file.lastModified;
-              const arrayBuffer = await file.arrayBuffer();
-              const workbook = XLSX.read(arrayBuffer, {
-                type: "array",
-                cellNF: true,
-                cellStyles: true,
-                cellText: true,
-                cellDates: false,
-                cellFormula: false,
-              });
+              let workbook;
+              if (/\.(csv|txt)$/i.test(handle.name)) {
+                // CSV/TXT：按文本解析，SheetJS 自动识别分隔符（逗号/Tab/分号）
+                const buf = await file.arrayBuffer();
+                let text = new TextDecoder("utf-8").decode(buf);
+                if (text.includes("\uFFFD")) {
+                  // UTF-8 解码出现替换符，多半是 GBK 编码（如 Excel 另存的 CSV），尝试按 GBK 解码
+                  try {
+                    text = new TextDecoder("gbk").decode(buf);
+                  } catch (e) {}
+                }
+                workbook = XLSX.read(text, {
+                  type: "string",
+                  cellNF: true,
+                  cellStyles: true,
+                  cellText: true,
+                  cellDates: false,
+                  cellFormula: false,
+                });
+              } else {
+                const arrayBuffer = await file.arrayBuffer();
+                workbook = XLSX.read(arrayBuffer, {
+                  type: "array",
+                  cellNF: true,
+                  cellStyles: true,
+                  cellText: true,
+                  cellDates: false,
+                  cellFormula: false,
+                });
+              }
               const validSheetNames = workbook.SheetNames.filter((name) => {
                 const ws = workbook.Sheets[name];
                 return ws["!ref"];
