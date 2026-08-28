@@ -383,6 +383,8 @@
           hasUnsavedChanges: false,
           editingBackground: false,
           drawMode: false,
+          drawColor: "#000000",
+          drawWidth: 3,
           printCurrentOnly: false,
           isReplacingObject: false,
           dataSource: {
@@ -4174,8 +4176,10 @@
             if (on) {
               canvas.discardActiveObject();
               canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
-              canvas.freeDrawingBrush.color = "#000000";
-              canvas.freeDrawingBrush.width = 3;
+              this._applyDrawSettings();
+              const colorInput = document.getElementById("drawColor");
+              if (colorInput) colorInput.value = App.state.drawColor;
+              this._syncDrawWidthUI();
               if (!this._drawPathHook) {
                 this._drawPathHook = true;
                 canvas.on("path:created", () => {
@@ -4189,11 +4193,63 @@
             canvas.selection = !on;
             const btn = document.getElementById("btnDraw");
             if (btn) btn.classList.toggle("active", on);
+            const opts = document.getElementById("drawOptions");
+            if (opts) opts.style.display = on ? "flex" : "none";
             canvas.requestRenderAll();
           },
 
           exitDraw: function () {
             if (App.state.drawMode) this._setDrawMode(false);
+          },
+
+          setDrawColor: function (value) {
+            App.state.drawColor = value || "#000000";
+            if (App.state.drawMode) this._applyDrawSettings();
+          },
+
+          setDrawWidth: function (value) {
+            const customInput = document.getElementById("drawWidthCustom");
+            if (value === "custom") {
+              if (customInput) {
+                customInput.classList.remove("hidden");
+                customInput.focus();
+                customInput.select();
+              }
+              return;
+            }
+            if (customInput) customInput.classList.add("hidden");
+            const w = Math.max(0.5, parseFloat(value) || 3);
+            App.state.drawWidth = w;
+            if (App.state.drawMode) this._applyDrawSettings();
+          },
+
+          setDrawWidthCustom: function (value) {
+            const w = Math.max(0.5, parseFloat(value) || 3);
+            App.state.drawWidth = w;
+            if (App.state.drawMode) this._applyDrawSettings();
+          },
+
+          _applyDrawSettings: function () {
+            const brush = App.canvas.freeDrawingBrush;
+            if (!brush) return;
+            brush.color = App.state.drawColor;
+            brush.width = App.state.drawWidth;
+          },
+
+          _syncDrawWidthUI: function () {
+            const sel = document.getElementById("drawWidth");
+            const num = document.getElementById("drawWidthCustom");
+            if (!sel || !num) return;
+            const v = String(App.state.drawWidth);
+            const hasPreset = Array.from(sel.options).some((o) => o.value === v);
+            if (hasPreset) {
+              sel.value = v;
+              num.classList.add("hidden");
+            } else {
+              sel.value = "custom";
+              num.value = App.state.drawWidth;
+              num.classList.remove("hidden");
+            }
           },
 
           handleImageUpload: function (input) {
