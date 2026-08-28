@@ -9115,7 +9115,7 @@
           },
 
           _createProjectSnapshot: function () {
-            return App.project.buildSnapshot({ includeDataSource: false });
+            return App.project.buildSnapshot({ includeDataSource: true });
           },
 
           saveCurrent: async function () {
@@ -9263,7 +9263,6 @@
                 if (data.settings && data.canvasData) {
                   const baseName = String(file.name || "").replace(/\.paper$/i, "").trim() || "未命名模板";
                   const project = JSON.parse(JSON.stringify(data));
-                  project.dataSource = null;
                   pending.push(this._toLocalTemplate(baseName, "从 .paper 文件导入的模板", [], project.thumbnail, project));
                   continue;
                 }
