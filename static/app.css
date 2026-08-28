@@ -34,6 +34,12 @@
         border-color: #e11d48;
       }
 
+      #btnDraw.active {
+        background-color: #fee2e2;
+        color: #e11d48;
+        border-color: #e11d48;
+      }
+
       /* 画布区域背景 */
       #scrollContainer {
         background-image: radial-gradient(#ddd 1px, transparent 1px);

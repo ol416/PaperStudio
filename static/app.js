@@ -382,6 +382,7 @@
           localFontsLoaded: false,
           hasUnsavedChanges: false,
           editingBackground: false,
+          drawMode: false,
           printCurrentOnly: false,
           isReplacingObject: false,
           dataSource: {
@@ -3841,6 +3842,12 @@
                 App.findReplace.open();
               }
             });
+            hotkeys("esc", (e) => {
+              if (App.state.drawMode) {
+                e.preventDefault();
+                App.tools.exitDraw();
+              }
+            });
             hotkeys("del,backspace", (e) => {
               if (!isInput()) {
                 e.preventDefault();
@@ -3935,6 +3942,7 @@
           }),
 
           _addToCanvas: function (obj) {
+            this.exitDraw();
             App.canvas.add(obj);
             App.canvas.setActiveObject(obj);
             App.canvas.requestRenderAll();
@@ -4136,6 +4144,38 @@
               });
             }
             if (obj) this._addToCanvas(obj);
+          },
+
+          toggleDraw: function () {
+            this._setDrawMode(!App.state.drawMode);
+          },
+
+          _setDrawMode: function (on) {
+            const canvas = App.canvas;
+            App.state.drawMode = on;
+            if (on) {
+              canvas.discardActiveObject();
+              canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
+              canvas.freeDrawingBrush.color = "#000000";
+              canvas.freeDrawingBrush.width = 3;
+              if (!this._drawPathHook) {
+                this._drawPathHook = true;
+                canvas.on("path:created", () => {
+                  App.ui.updateLayerList();
+                  App.canvas.requestRenderAll();
+                });
+              }
+            }
+            canvas.isDrawingMode = on;
+            canvas.skipTargetFind = on;
+            canvas.selection = !on;
+            const btn = document.getElementById("btnDraw");
+            if (btn) btn.classList.toggle("active", on);
+            canvas.requestRenderAll();
+          },
+
+          exitDraw: function () {
+            if (App.state.drawMode) this._setDrawMode(false);
           },
 
           handleImageUpload: function (input) {
