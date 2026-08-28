@@ -3884,6 +3884,24 @@
               e.preventDefault();
               App.tools.ungroup();
             });
+            hotkeys("ctrl+d,command+d", (e) => {
+              if (!isInput() && App.canvas.getActiveObject()) {
+                e.preventDefault();
+                App.tools.duplicateActive();
+              }
+            });
+            hotkeys("ctrl+shift+],command+shift+]", (e) => {
+              if (!isInput() && App.canvas.getActiveObject()) {
+                e.preventDefault();
+                App.tools.bringToFront();
+              }
+            });
+            hotkeys("ctrl+shift+[,command+shift+[", (e) => {
+              if (!isInput() && App.canvas.getActiveObject()) {
+                e.preventDefault();
+                App.tools.sendToBack();
+              }
+            });
           },
         },
 
@@ -4402,6 +4420,75 @@
             act.setCoords();
             App.canvas.requestRenderAll();
             App.ui.updateGeo(null, null, act);
+          },
+
+          duplicateActive: function () {
+            const act = App.canvas.getActiveObject();
+            if (!act) return;
+            act.clone((c) => {
+              App.canvas.discardActiveObject();
+              c.set({
+                left: c.left + 20,
+                top: c.top + 20,
+                evented: true,
+              });
+              if (c.dataBinding) {
+                c.dataBinding = JSON.parse(JSON.stringify(c.dataBinding));
+              }
+              if (c.dateConfig) c.dateConfig = JSON.parse(JSON.stringify(c.dateConfig));
+              if (c.serialConfig) c.serialConfig = JSON.parse(JSON.stringify(c.serialConfig));
+              if (c.barcodeConfig) c.barcodeConfig = JSON.parse(JSON.stringify(c.barcodeConfig));
+              if (c.syncMode === "share" && c.sharedId) {
+                c.syncMode = "ref";
+                Utils.toast("已粘贴为引用对象");
+              }
+              if (c.isTable && c.tableData) {
+                c.tableData = JSON.parse(JSON.stringify(c.tableData));
+              }
+              if (c.isSmartRect && c.cornerConfig) {
+                c.cornerConfig = JSON.parse(JSON.stringify(c.cornerConfig));
+              }
+              if (c.type === "activeSelection") {
+                c.canvas = App.canvas;
+                c.forEachObject((o) => {
+                  if (o.syncMode === "share" && o.sharedId) {
+                    o.syncMode = "ref";
+                  }
+                  App.canvas.add(o);
+                });
+                c.setCoords();
+              } else {
+                App.canvas.add(c);
+              }
+              App.canvas.setActiveObject(c);
+              if (c.syncMode === "ref" && c.sharedId) {
+                App.ui.applyRefId(c.sharedId);
+              }
+              App.canvas.requestRenderAll();
+              App.ui.updateLayerList();
+              App.ui.updateInspector();
+              App.history.saveState();
+            }, CUSTOM_PROPS);
+          },
+
+          bringToFront: function () {
+            const act = App.canvas.getActiveObject();
+            if (!act) return;
+            act.bringToFront();
+            App.canvas.requestRenderAll();
+            App.ui.updateLayerList();
+            App.ui.updateInspector();
+            App.history.saveState();
+          },
+
+          sendToBack: function () {
+            const act = App.canvas.getActiveObject();
+            if (!act) return;
+            act.sendToBack();
+            App.canvas.requestRenderAll();
+            App.ui.updateLayerList();
+            App.ui.updateInspector();
+            App.history.saveState();
           },
 
           updateSmartCorner: function (key, value) {
@@ -6761,6 +6848,12 @@
               div.className = `${baseClass} ${isSelected ? activeClass : normalClass}`;
               if (!isBg && !isLabelPreview) div.setAttribute("draggable", "true");
               const deleteBtnHtml = `
+                <button class="layer-order-btn w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-blue-600 hover:bg-blue-100 opacity-0 group-hover:opacity-100 transition-all shrink-0" title="置顶">
+                    <i class="ph ph-arrow-fat-line-up"></i>
+                </button>
+                <button class="layer-order-btn w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-orange-600 hover:bg-orange-100 opacity-0 group-hover:opacity-100 transition-all shrink-0" title="置底">
+                    <i class="ph ph-arrow-fat-line-down"></i>
+                </button>
                 <button class="del-btn w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-red-600 hover:bg-red-100 opacity-0 group-hover:opacity-100 transition-all shrink-0" title="删除">
                     <i class="ph ph-trash"></i>
                 </button>`;
@@ -6851,6 +6944,18 @@
                       this.updateInspector();
                     }
                   }
+                };
+              }
+
+              const orderBtns = div.querySelectorAll(".layer-order-btn");
+              if (orderBtns.length === 2 && !isLabelPreview && !isBg) {
+                orderBtns[0].onclick = (e) => {
+                  e.stopPropagation();
+                  App.tools.bringToFront();
+                };
+                orderBtns[1].onclick = (e) => {
+                  e.stopPropagation();
+                  App.tools.sendToBack();
                 };
               }
 
@@ -7095,6 +7200,7 @@
           toggleFullScreen: () => (!document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()),
           showModal: (id) => document.getElementById(id).classList.remove("hidden"),
           hideModal: (id) => document.getElementById(id).classList.add("hidden"),
+          showHelp: () => App.ui.showModal("helpModal"),
 
           toggleExportMenu: function (e) {
             if (e && e.stopPropagation) e.stopPropagation();

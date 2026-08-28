@@ -281,6 +281,64 @@
         </div>
       </div>
     </div>
+    <div id="helpModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+      <div class="bg-white rounded-xl shadow-2xl p-6 w-[520px] relative max-h-[85vh] flex flex-col">
+        <button
+          onclick="App.ui.hideModal('helpModal')"
+          class="absolute top-3 right-3 text-slate-400 hover:text-slate-600 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition">
+          <i class="ph ph-x text-lg"></i>
+        </button>
+
+        <h3 class="text-lg font-bold text-slate-800 mb-1 flex items-center gap-2">
+          <i class="ph ph-keyboard text-red-500 text-xl"></i> 快捷键帮助
+        </h3>
+        <p class="text-sm text-slate-400 mb-4">提升设计效率的键盘快捷键</p>
+
+        <div class="space-y-4 overflow-y-auto custom-scrollbar flex-1 pr-1">
+          <div>
+            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">文件操作</h4>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex justify-between"><span class="text-slate-600">保存</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + S</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">打开</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + O</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">打印</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + P</span></div>
+            </div>
+          </div>
+          <div>
+            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">编辑操作</h4>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex justify-between"><span class="text-slate-600">撤销</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + Z</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">重做</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + Y</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">复制</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + C</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">粘贴</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + V</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">复制并粘贴（重复）</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + D</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">删除</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Delete</span></div>
+            </div>
+          </div>
+          <div>
+            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">图层与排列</h4>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex justify-between"><span class="text-slate-600">置顶图层</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + Shift + ]</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">置底图层</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + Shift + [</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">组合</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + G</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">取消组合</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + Shift + G</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">锁定/解锁</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + L</span></div>
+            </div>
+          </div>
+          <div>
+            <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">画布操作</h4>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex justify-between"><span class="text-slate-600">微调位置（方向键）</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">↑ ↓ ← →</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">查找替换</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + F</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">退出画笔</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Esc</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flex gap-3 justify-end mt-6">
+          <button onclick="App.ui.hideModal('helpModal')" class="px-4 py-2 rounded-lg border border-gray-300 text-slate-600 hover:bg-gray-50 text-sm transition">关闭</button>
+        </div>
+      </div>
+    </div>
     <div id="tableModal" class="hidden fixed inset-0 z-50 items-center justify-center modal-backdrop">
       <div class="bg-white w-[98vw] h-[95vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 z-20 bg-white shadow-sm shrink-0">
@@ -629,6 +687,9 @@
         </button>
         <button onclick="App.ui.showModal('contactModal')" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="联系作者">
           <i class="ph ph-wechat-logo text-lg"></i>
+        </button>
+        <button onclick="App.ui.showHelp()" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="快捷键帮助">
+          <i class="ph ph-keyboard text-lg"></i>
         </button>
         <button onclick="App.ui.toggleFullScreen()" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="全屏模式">
           <i id="fsIcon" class="ph ph-corners-out text-lg"></i>
