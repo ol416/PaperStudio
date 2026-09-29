@@ -1241,7 +1241,8 @@
           maxTotalBytes: 20 * 1024 * 1024,
           maxItemBytes: 4 * 1024 * 1024,
           // 内容索引长度上限（每条最多保存多少字符的可搜索文本）
-          maxTextChars: 2000,
+          // 批量/多页输出按页累积，需要留出足够余量，避免后半批内容被截断
+          maxTextChars: 4000,
           // 列表按批渲染，避免几百条记录时一次性创建大量 DOM
           pageSize: 60,
           thumbnailMultiplier: 0.2,
@@ -1358,38 +1359,122 @@
           // 抽取快照里的可见文字，作为独立于快照的内容检索索引
           // 覆盖：文本框 / 表格单元格 / 条码内容 / 原始内容，以及组内嵌套对象
           _extractText: function (snapshot) {
-            const parts = [];
-            const seen = new Set();
-            let overflow = false;
-            const push = (value) => {
-              const str = typeof value === "string" ? value.trim() : "";
-              if (!str || seen.has(str)) return;
-              seen.add(str);
-              parts.push(str);
-            };
-            const walk = (objects) => {
-              (objects || []).forEach((obj) => {
-                if (!obj || obj.excludeFromExport) return;
-                if (obj.isTable && obj.tableData && Array.isArray(obj.tableData.cells)) {
-                  obj.tableData.cells.flat().forEach((cell) => cell && push(cell.text));
-                }
-                if (obj.isBarcode && obj.barcodeConfig) push(obj.barcodeConfig.text);
-                if (typeof obj.text === "string") push(obj.text);
-                if (typeof obj.rawContent === "string") push(obj.rawContent);
-                if (Array.isArray(obj.objects)) walk(obj.objects);
-              });
-            };
+            let parts = [];
             try {
-              walk(snapshot && snapshot.canvasData && snapshot.canvasData.objects);
+              parts = this._collectParts(snapshot && snapshot.canvasData && snapshot.canvasData.objects, false);
             } catch (e) {
               console.warn("提取历史内容文本失败", e);
             }
+            return this._joinParts(parts);
+          },
+
+          // 收集可见文字片段；live=true 表示传入的是画布上的实时对象
+          _collectParts: function (objects, live, parts = [], seen = new Set()) {
+            (objects || []).forEach((obj) => {
+              if (!obj || obj.excludeFromExport) return;
+              if (obj.isTable && obj.tableData && Array.isArray(obj.tableData.cells)) {
+                obj.tableData.cells.flat().forEach((cell) => this._pushPart(parts, seen, cell && cell.text));
+              }
+              if (obj.isBarcode && obj.barcodeConfig) this._pushPart(parts, seen, obj.barcodeConfig.text);
+              this._pushPart(parts, seen, obj.text);
+              this._pushPart(parts, seen, obj.rawContent);
+              const children = live ? (typeof obj.getObjects === "function" ? obj.getObjects() : obj._objects) : obj.objects;
+              if (children && children.length) this._collectParts(children, live, parts, seen);
+            });
+            return parts;
+          },
+
+          _pushPart: function (parts, seen, value) {
+            const str = typeof value === "string" ? value.trim() : "";
+            if (!str || seen.has(str)) return;
+            seen.add(str);
+            parts.push(str);
+          },
+
+          // 拼接片段并按上限截断
+          _joinParts: function (parts) {
             let joined = parts.join(" ").replace(/\s+/g, " ").trim();
-            if (joined.length > this.maxTextChars) {
-              joined = joined.slice(0, this.maxTextChars);
-              overflow = true;
+            if (joined.length > this.maxTextChars) joined = `${joined.slice(0, this.maxTextChars)}…`;
+            return joined;
+          },
+
+          // 分页输出时按页采集内容索引，避免整批内容只索引到输出前停留的那一页
+          _capture: null,
+          startCapture: function () {
+            this._capture = { parts: [], seen: new Set() };
+          },
+          captureCurrentCanvas: function () {
+            if (!this._capture || !App.canvas) return;
+            try {
+              this._collectParts(App.canvas.getObjects(), true, this._capture.parts, this._capture.seen);
+            } catch (e) {
+              console.warn("采集页面内容索引失败", e);
             }
-            return overflow ? `${joined}…` : joined;
+          },
+          // 采集结束：把整批内容写回该条记录；id 为空（失败或异常）时只清理缓冲
+          endCapture: async function (id) {
+            const capture = this._capture;
+            this._capture = null;
+            const text = capture ? this._joinParts(capture.parts) : "";
+            if (!id || !text) return;
+            await this._queue(async () => {
+              const item = this._list.find((r) => r.id === id);
+              if (!item || item.status === "failed" || item.text === text) return;
+              item.text = text;
+              await this._persist();
+              this.render();
+            });
+          },
+
+          // 命中片段：以首个真正出现在内容里的关键词定位，并标出窗口内所有命中
+          _buildSnippet: function (content, terms) {
+            const lower = content.toLowerCase();
+            let anchor = -1;
+            terms.forEach((term) => {
+              if (anchor >= 0) return;
+              const idx = lower.indexOf(term.toLowerCase());
+              if (idx >= 0) anchor = idx;
+            });
+            if (anchor < 0) return null;
+
+            const start = Math.max(0, anchor - 10);
+            const end = Math.min(content.length, start + 60);
+            const windowText = content.slice(start, end);
+            const lowerWindow = windowText.toLowerCase();
+            const hits = [];
+            terms.forEach((term) => {
+              const needle = term.toLowerCase();
+              if (!needle) return;
+              let idx = lowerWindow.indexOf(needle);
+              while (idx >= 0) {
+                hits.push({ index: idx, length: term.length });
+                idx = lowerWindow.indexOf(needle, idx + needle.length);
+              }
+            });
+            hits.sort((a, b) => a.index - b.index || b.length - a.length);
+
+            const marks = [];
+            let lastEnd = 0;
+            hits.forEach((hit) => {
+              if (hit.index < lastEnd) return;
+              marks.push(hit);
+              lastEnd = hit.index + hit.length;
+            });
+
+            const nodes = [];
+            if (start > 0) nodes.push(document.createTextNode("…"));
+            let cursor = 0;
+            marks.forEach((mark) => {
+              if (mark.index > cursor) nodes.push(document.createTextNode(windowText.slice(cursor, mark.index)));
+              const el = document.createElement("mark");
+              el.className = "bg-yellow-200 text-red-700 rounded-sm px-0.5";
+              el.textContent = windowText.slice(mark.index, mark.index + mark.length);
+              nodes.push(el);
+              cursor = mark.index + mark.length;
+            });
+            if (cursor < windowText.length) nodes.push(document.createTextNode(windowText.slice(cursor)));
+            if (end < content.length) nodes.push(document.createTextNode("…"));
+            return nodes;
           },
 
           // 内容文本：老记录没有索引字段时按需补算并缓存到内存
@@ -1459,6 +1544,11 @@
             return entry;
           },
 
+          // 内容索引占用的字节数（与快照一起计入预算）
+          _textBytes: function (text) {
+            return typeof text === "string" && text ? new TextEncoder().encode(text).length : 0;
+          },
+
           // 清理顺序：先丢过期记录（30 天），再按条数截断，
           // 最后若总体积超限，从最旧开始剥离完整快照（仍保留元信息，可搜索/统计/导出）
           _trim: function () {
@@ -1467,7 +1557,8 @@
               if ((this._list[i].timestamp || 0) < cutoff) this._list.splice(i, 1);
             }
             if (this._list.length > this.maxItems) this._list.length = this.maxItems;
-            let total = this._list.reduce((sum, item) => sum + (item.size || 0), 0);
+            // 快照体积与内容索引体积一起计入预算，避免索引悄悄挤爆存储
+            let total = this._list.reduce((sum, item) => sum + (item.size || 0) + this._textBytes(item.text), 0);
             for (let i = this._list.length - 1; i >= 0 && total > this.maxTotalBytes; i--) {
               const item = this._list[i];
               if (!item.data) continue;
@@ -1726,25 +1817,15 @@
               info.appendChild(errLine);
             }
 
-            // 命中内容时展示上下文片段，方便确认是不是要找的那张
-            const firstTerm = this._query.trim().split(/\s+/).filter(Boolean)[0];
+            // 命中内容时展示上下文片段，片段内所有命中的关键词都会高亮
+            const terms = this._query.trim().split(/\s+/).filter(Boolean);
             const content = this._contentText(item);
-            if (firstTerm && content) {
-              const hit = content.toLowerCase().indexOf(firstTerm.toLowerCase());
-              if (hit >= 0) {
-                const start = Math.max(0, hit - 10);
-                const end = Math.min(content.length, start + 60);
-                const line = document.createElement("div");
-                line.className = "mt-0.5 px-1 py-0.5 rounded bg-amber-50 border border-amber-100 text-[10px] text-slate-600 leading-snug";
-                const hitLen = firstTerm.length;
-                const before = document.createTextNode(`${start > 0 ? "…" : ""}${content.slice(start, hit)}`);
-                const mark = document.createElement("mark");
-                mark.className = "bg-yellow-200 text-red-700 rounded-sm px-0.5";
-                mark.textContent = content.slice(hit, hit + hitLen);
-                const after = document.createTextNode(`${content.slice(hit + hitLen, end)}${end < content.length ? "…" : ""}`);
-                line.append(before, mark, after);
-                info.appendChild(line);
-              }
+            const snippet = terms.length && content ? this._buildSnippet(content, terms) : null;
+            if (snippet) {
+              const line = document.createElement("div");
+              line.className = "mt-0.5 px-1 py-0.5 rounded bg-amber-50 border border-amber-100 text-[10px] text-slate-600 leading-snug";
+              line.append(...snippet);
+              info.appendChild(line);
             }
 
             const actions = document.createElement("div");
@@ -8777,6 +8858,9 @@
                   await App.label.renderPreview();
                 }
 
+                // 该页渲染完成后立刻采集内容索引，整批输出都能被检索到
+                App.printHistory.captureCurrentCanvas();
+
                 const result = await cb(i, loopCount, { w, h });
                 if (result !== undefined) results.push(result);
               }
@@ -8821,12 +8905,14 @@
               const printFrame = this._createPrintIframe(css);
               const printDoc = printFrame.contentWindow.document;
               const { w, h } = App.state.currentPaper;
+              App.printHistory.startCapture();
               await this._renderExportPages(async () => {
                 const vC = await this._getExportCanvas();
                 const svg = this._pageSVG(vC);
                 vC.dispose();
                 this._appendPrintPage(printDoc, svg, w, h);
               });
+              await App.printHistory.endCapture(historyEntry && historyEntry.id);
 
               await new Promise((resolve) => {
                 printFrame.contentWindow.requestAnimationFrame(() => printFrame.contentWindow.requestAnimationFrame(resolve));
@@ -8842,6 +8928,8 @@
                 await App.printHistory.log("print", { status: "failed", error: e.message });
               }
             } finally {
+              // 失败或异常时丢弃未提交的内容采集缓冲
+              App.printHistory.endCapture(null);
               App.ui.hideLoading();
             }
           },
@@ -8884,6 +8972,7 @@
               const settings = App.paper.getSettings();
               const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
               let pageCount = 0;
+              App.printHistory.startCapture();
               await this._renderExportPages(async (i) => {
                 pageCount++;
                 App.ui.showLoading(`正在生成第 ${i + 1} 页...`);
@@ -8903,7 +8992,8 @@
               const fileName = `${typeLabel}_${Date.now()}.pdf`;
               pdf.save(fileName);
               Utils.toast(`PDF 导出成功 (${pageCount} 页)`);
-              await App.printHistory.log("pdf", { pages: Math.max(1, pageCount) });
+              const pdfEntry = await App.printHistory.log("pdf", { pages: Math.max(1, pageCount) });
+              await App.printHistory.endCapture(pdfEntry && pdfEntry.id);
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
@@ -8912,6 +9002,7 @@
               if (App.fontManager && typeof App.fontManager.clearCache === "function") {
                 App.fontManager.clearCache();
               }
+              App.printHistory.endCapture(null);
               App.ui.hideLoading();
             }
           },
@@ -8937,6 +9028,7 @@
             try {
               const settings = App.paper.getSettings();
               const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
+              App.printHistory.startCapture();
               const blobs = await this._renderExportPages(async (i, loopCount) => {
                 App.ui.showLoading(`正在生成第 ${i + 1} 页 PNG (${scale}x)...`);
                 const vC = await this._getExportCanvas({ transparent });
@@ -8953,12 +9045,14 @@
                 this._downloadBlob(blob, fileName);
               });
               Utils.toast(`PNG 导出成功 (${blobs.length} 页)`);
-              await App.printHistory.log("png", { pages: Math.max(1, blobs.length), scale });
+              const pngEntry = await App.printHistory.log("png", { pages: Math.max(1, blobs.length), scale });
+              await App.printHistory.endCapture(pngEntry && pngEntry.id);
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
               App.printHistory.log("png", { status: "failed", error: e.message });
             } finally {
+              App.printHistory.endCapture(null);
               App.ui.hideLoading();
             }
           },
@@ -8969,6 +9063,7 @@
               const settings = App.paper.getSettings();
               const typeLabel = App.paper.defaults[settings.type]?.label || "设计稿";
               const { w, h } = App.state.currentPaper;
+              App.printHistory.startCapture();
               const svgs = await this._renderExportPages(async (i) => {
                 App.ui.showLoading(`正在生成第 ${i + 1} 页 SVG...`);
                 const vC = await this._getExportCanvas();
@@ -8984,12 +9079,14 @@
                 this._downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), fileName);
               });
               Utils.toast(`SVG 导出成功 (${svgs.length} 页)`);
-              await App.printHistory.log("svg", { pages: Math.max(1, svgs.length) });
+              const svgEntry = await App.printHistory.log("svg", { pages: Math.max(1, svgs.length) });
+              await App.printHistory.endCapture(svgEntry && svgEntry.id);
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
               App.printHistory.log("svg", { status: "failed", error: e.message });
             } finally {
+              App.printHistory.endCapture(null);
               App.ui.hideLoading();
             }
           },
