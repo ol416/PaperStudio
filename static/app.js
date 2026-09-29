@@ -1240,6 +1240,8 @@
           retentionDays: 30,
           maxTotalBytes: 20 * 1024 * 1024,
           maxItemBytes: 4 * 1024 * 1024,
+          // 内容索引长度上限（每条最多保存多少字符的可搜索文本）
+          maxTextChars: 2000,
           // 列表按批渲染，避免几百条记录时一次性创建大量 DOM
           pageSize: 60,
           thumbnailMultiplier: 0.2,
@@ -1267,6 +1269,7 @@
           init: async function () {
             await this._load();
             this._ready = true;
+            await this._backfillText();
             this.render();
           },
 
@@ -1352,6 +1355,65 @@
             };
           },
 
+          // 抽取快照里的可见文字，作为独立于快照的内容检索索引
+          // 覆盖：文本框 / 表格单元格 / 条码内容 / 原始内容，以及组内嵌套对象
+          _extractText: function (snapshot) {
+            const parts = [];
+            const seen = new Set();
+            let overflow = false;
+            const push = (value) => {
+              const str = typeof value === "string" ? value.trim() : "";
+              if (!str || seen.has(str)) return;
+              seen.add(str);
+              parts.push(str);
+            };
+            const walk = (objects) => {
+              (objects || []).forEach((obj) => {
+                if (!obj || obj.excludeFromExport) return;
+                if (obj.isTable && obj.tableData && Array.isArray(obj.tableData.cells)) {
+                  obj.tableData.cells.flat().forEach((cell) => cell && push(cell.text));
+                }
+                if (obj.isBarcode && obj.barcodeConfig) push(obj.barcodeConfig.text);
+                if (typeof obj.text === "string") push(obj.text);
+                if (typeof obj.rawContent === "string") push(obj.rawContent);
+                if (Array.isArray(obj.objects)) walk(obj.objects);
+              });
+            };
+            try {
+              walk(snapshot && snapshot.canvasData && snapshot.canvasData.objects);
+            } catch (e) {
+              console.warn("提取历史内容文本失败", e);
+            }
+            let joined = parts.join(" ").replace(/\s+/g, " ").trim();
+            if (joined.length > this.maxTextChars) {
+              joined = joined.slice(0, this.maxTextChars);
+              overflow = true;
+            }
+            return overflow ? `${joined}…` : joined;
+          },
+
+          // 内容文本：老记录没有索引字段时按需补算并缓存到内存
+          _contentText: function (item) {
+            if (typeof item.text === "string") return item.text;
+            if (!item.data) return "";
+            item.text = this._extractText(item.data);
+            return item.text;
+          },
+
+          // 升级后为缺少内容索引的老记录补齐（快照已被剥离的无法补）
+          _backfillText: async function () {
+            let changed = false;
+            this._list.forEach((item) => {
+              if (typeof item.text === "string" || !item.data) return;
+              item.text = this._extractText(item.data);
+              changed = true;
+            });
+            if (!changed) return;
+            await this._queue(async () => {
+              await this._persist();
+            });
+          },
+
           _buildEntry: function (kind, extra = {}, withData = true) {
             const meta = { ...this._collectMeta(), ...extra };
             const entry = {
@@ -1364,6 +1426,7 @@
               thumbnail: "",
               hash: "",
               size: 0,
+              text: "",
               data: null,
             };
             delete meta.status;
@@ -1377,6 +1440,8 @@
                 thumbnailMultiplier: this.thumbnailMultiplier,
               });
               entry.thumbnail = typeof snapshot.thumbnail === "string" ? snapshot.thumbnail : "";
+              // 内容索引独立于快照保存，快照被清理后仍能搜索到打印内容
+              entry.text = this._extractText(snapshot);
               entry.hash = this._hash(
                 `${entry.kind}|${JSON.stringify(snapshot.canvasData)}|${JSON.stringify(snapshot.settings)}|${snapshot.paperSize}`,
               );
@@ -1550,6 +1615,7 @@
               item.error || "",
               new Date(item.timestamp).toLocaleString(),
               this._timeText(item.timestamp),
+              this._contentText(item),
             ]
               .join(" ")
               .toLowerCase();
@@ -1658,6 +1724,27 @@
               errLine.className = "truncate text-[10px] text-red-500";
               errLine.textContent = item.error;
               info.appendChild(errLine);
+            }
+
+            // 命中内容时展示上下文片段，方便确认是不是要找的那张
+            const firstTerm = this._query.trim().split(/\s+/).filter(Boolean)[0];
+            const content = this._contentText(item);
+            if (firstTerm && content) {
+              const hit = content.toLowerCase().indexOf(firstTerm.toLowerCase());
+              if (hit >= 0) {
+                const start = Math.max(0, hit - 10);
+                const end = Math.min(content.length, start + 60);
+                const line = document.createElement("div");
+                line.className = "mt-0.5 px-1 py-0.5 rounded bg-amber-50 border border-amber-100 text-[10px] text-slate-600 leading-snug";
+                const hitLen = firstTerm.length;
+                const before = document.createTextNode(`${start > 0 ? "…" : ""}${content.slice(start, hit)}`);
+                const mark = document.createElement("mark");
+                mark.className = "bg-yellow-200 text-red-700 rounded-sm px-0.5";
+                mark.textContent = content.slice(hit, hit + hitLen);
+                const after = document.createTextNode(`${content.slice(hit + hitLen, end)}${end < content.length ? "…" : ""}`);
+                line.append(before, mark, after);
+                info.appendChild(line);
+              }
             }
 
             const actions = document.createElement("div");
