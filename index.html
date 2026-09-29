@@ -604,6 +604,58 @@
                 <i class="ph ph-clock-clockwise"></i> 打印 / 导出历史
               </div>
               <div id="printHistoryStats" class="hidden px-2 pb-1.5 text-[10px] text-slate-400"></div>
+              <div id="printHistorySearchBar" class="hidden px-1 pb-1.5">
+                <div class="relative">
+                  <i class="ph ph-magnifying-glass absolute left-2 top-1/2 -translate-y-1/2 text-[12px] text-slate-400 pointer-events-none"></i>
+                  <input
+                    id="printHistorySearch"
+                    type="text"
+                    autocomplete="off"
+                    placeholder="搜索纸张 / 尺寸 / 数据源 / 类型…"
+                    oninput="App.printHistory.setQuery(this.value)"
+                    onkeydown="if(event.key==='Escape'){event.stopPropagation();App.printHistory.clearFilters();}"
+                    class="w-full rounded-md border border-gray-200 bg-gray-50 pl-7 pr-7 py-1 text-[11px] text-slate-600 placeholder:text-slate-400 focus:outline-none focus:bg-white focus:border-red-300 transition" />
+                  <button
+                    id="printHistorySearchClear"
+                    onclick="App.printHistory.clearFilters()"
+                    title="清除搜索"
+                    class="hidden absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-600">
+                    <i class="ph ph-x text-[11px]"></i>
+                  </button>
+                </div>
+                <div id="printHistoryKindFilter" class="flex items-center gap-1 mt-1.5">
+                  <button
+                    data-kind="all"
+                    onclick="App.printHistory.setKind('all')"
+                    class="px-1.5 py-0.5 rounded text-[10px] text-slate-500 hover:bg-gray-100 transition">
+                    全部
+                  </button>
+                  <button
+                    data-kind="print"
+                    onclick="App.printHistory.setKind('print')"
+                    class="px-1.5 py-0.5 rounded text-[10px] text-slate-500 hover:bg-gray-100 transition">
+                    打印
+                  </button>
+                  <button
+                    data-kind="pdf"
+                    onclick="App.printHistory.setKind('pdf')"
+                    class="px-1.5 py-0.5 rounded text-[10px] text-slate-500 hover:bg-gray-100 transition">
+                    PDF
+                  </button>
+                  <button
+                    data-kind="png"
+                    onclick="App.printHistory.setKind('png')"
+                    class="px-1.5 py-0.5 rounded text-[10px] text-slate-500 hover:bg-gray-100 transition">
+                    PNG
+                  </button>
+                  <button
+                    data-kind="svg"
+                    onclick="App.printHistory.setKind('svg')"
+                    class="px-1.5 py-0.5 rounded text-[10px] text-slate-500 hover:bg-gray-100 transition">
+                    SVG
+                  </button>
+                </div>
+              </div>
               <div id="printHistoryList" class="print-history-list custom-scrollbar"></div>
               <div id="printHistoryEmpty" class="px-3 py-4 text-center text-xs text-slate-400">
                 暂无记录<br />打印或导出后会自动记录

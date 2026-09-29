@@ -1236,9 +1236,12 @@
         // 因此状态只记录到“已发起 / 对话框已关闭（未确认）”。
         printHistory: {
           storageKey: "paperstudio:print-history:v1",
-          maxItems: 30,
+          maxItems: 400,
+          retentionDays: 30,
           maxTotalBytes: 20 * 1024 * 1024,
           maxItemBytes: 4 * 1024 * 1024,
+          // 列表按批渲染，避免几百条记录时一次性创建大量 DOM
+          pageSize: 60,
           thumbnailMultiplier: 0.2,
           statusFallbackMs: 10 * 60 * 1000,
           kindMeta: {
@@ -1256,6 +1259,10 @@
           _list: [],
           _chain: null,
           _ready: false,
+          // 搜索 / 筛选状态（仅影响展示，不写库）
+          _query: "",
+          _kindFilter: "all",
+          _visibleCount: 60,
 
           init: async function () {
             await this._load();
@@ -1267,11 +1274,15 @@
             try {
               const stored = await idbKeyval.get(this.storageKey);
               const list = Array.isArray(stored) ? stored.filter((r) => r && r.kind && r.timestamp) : [];
+              // 30 天有效期：启动时先丢弃过期记录
+              const cutoff = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
+              const kept = list.filter((item) => (item.timestamp || 0) >= cutoff);
               // 修复遗留的“进行中”记录（例如打印后直接关闭页面）
-              list.forEach((item) => {
+              kept.forEach((item) => {
                 if (item.status === "started") item.status = "unknown";
               });
-              this._list = list;
+              this._list = kept;
+              if (kept.length !== list.length) await this._persist();
             } catch (e) {
               console.warn("读取打印历史失败", e);
               this._list = [];
@@ -1383,8 +1394,13 @@
             return entry;
           },
 
-          // 超出上限时先丢弃最旧的完整快照，仅保留元信息
+          // 清理顺序：先丢过期记录（30 天），再按条数截断，
+          // 最后若总体积超限，从最旧开始剥离完整快照（仍保留元信息，可搜索/统计/导出）
           _trim: function () {
+            const cutoff = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
+            for (let i = this._list.length - 1; i >= 0; i--) {
+              if ((this._list[i].timestamp || 0) < cutoff) this._list.splice(i, 1);
+            }
             if (this._list.length > this.maxItems) this._list.length = this.maxItems;
             let total = this._list.reduce((sum, item) => sum + (item.size || 0), 0);
             for (let i = this._list.length - 1; i >= 0 && total > this.maxTotalBytes; i--) {
@@ -1490,7 +1506,7 @@
           },
 
           getStats: function () {
-            const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            const since = Date.now() - this.retentionDays * 24 * 60 * 60 * 1000;
             return this._list.reduce(
               (acc, item) => {
                 if (item.timestamp >= since) {
@@ -1514,6 +1530,74 @@
             const day = Math.floor(hour / 24);
             if (day < 7) return `${day} 天前`;
             return new Date(ts).toLocaleString();
+          },
+
+          // 把一条记录的可读字段拼成检索字符串（支持纸张、尺寸、数据源、类型、状态、时间等）
+          _searchBlob: function (item) {
+            const m = item.meta || {};
+            const kindInfo = this.kindMeta[item.kind] || this.kindMeta.print;
+            return [
+              kindInfo.label,
+              item.kind,
+              this.statusText[item.status] || "",
+              m.paperLabel,
+              m.paperType,
+              m.paperSize,
+              `${m.width || 0}x${m.height || 0}`,
+              `${m.width || 0}×${m.height || 0}`,
+              `${m.pages || 0} 页`,
+              m.dataSource ? `${m.dataSource.fileName} ${m.dataSource.sheet || ""}` : "",
+              item.error || "",
+              new Date(item.timestamp).toLocaleString(),
+              this._timeText(item.timestamp),
+            ]
+              .join(" ")
+              .toLowerCase();
+          },
+
+          // 返回 [{ item, index }]，index 始终是真实列表下标，保证重做/恢复/删除定位正确
+          _filtered: function () {
+            const terms = this._query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+            const result = [];
+            this._list.forEach((item, index) => {
+              if (this._kindFilter !== "all" && item.kind !== this._kindFilter) return;
+              if (terms.length) {
+                const blob = this._searchBlob(item);
+                if (!terms.every((t) => blob.includes(t))) return;
+              }
+              result.push({ item, index });
+            });
+            return result;
+          },
+
+          setQuery: function (value) {
+            const next = String(value || "");
+            if (next === this._query) return;
+            this._query = next;
+            this._visibleCount = this.pageSize;
+            this.render();
+          },
+
+          setKind: function (kind) {
+            const next = kind === "all" || this.kindMeta[kind] ? kind : "all";
+            if (next === this._kindFilter) return;
+            this._kindFilter = next;
+            this._visibleCount = this.pageSize;
+            this.render();
+          },
+
+          clearFilters: function () {
+            this._query = "";
+            this._kindFilter = "all";
+            this._visibleCount = this.pageSize;
+            const input = document.getElementById("printHistorySearch");
+            if (input) input.value = "";
+            this.render();
+          },
+
+          showMore: function () {
+            this._visibleCount += this.pageSize;
+            this.render();
           },
 
           _createRow: function (item, index) {
@@ -1611,26 +1695,63 @@
             if (!container) return;
             container.innerHTML = "";
 
+            const matches = this._filtered();
+            const filtering = !!this._query.trim() || this._kindFilter !== "all";
             const hasItems = this._list.length > 0;
+            const hasMatches = matches.length > 0;
+
+            // 类型筛选按钮高亮
+            document.querySelectorAll("#printHistoryKindFilter [data-kind]").forEach((btn) => {
+              const active = btn.dataset.kind === this._kindFilter;
+              btn.classList.toggle("bg-red-50", active);
+              btn.classList.toggle("text-red-600", active);
+              btn.classList.toggle("font-semibold", active);
+              btn.classList.toggle("text-slate-500", !active);
+            });
+
+            const clearBtn = document.getElementById("printHistorySearchClear");
+            if (clearBtn) clearBtn.classList.toggle("hidden", !this._query);
+
+            const searchBar = document.getElementById("printHistorySearchBar");
+            if (searchBar) searchBar.classList.toggle("hidden", !hasItems);
+
             const emptyEl = document.getElementById("printHistoryEmpty");
-            if (emptyEl) emptyEl.classList.toggle("hidden", hasItems);
+            if (emptyEl) {
+              emptyEl.classList.toggle("hidden", hasMatches);
+              if (!hasMatches) {
+                emptyEl.innerHTML = hasItems
+                  ? '没有匹配的记录<br /><button onclick="App.printHistory.clearFilters()" class="mt-1 text-red-600 hover:underline">清除筛选</button>'
+                  : "暂无记录<br />打印或导出后会自动记录";
+              }
+            }
 
             const statsEl = document.getElementById("printHistoryStats");
             if (statsEl) {
               const stats = this.getStats();
-              statsEl.textContent = `近 7 天：${stats.count} 次输出 · ${stats.pages} 页`;
+              statsEl.textContent = `近 ${this.retentionDays} 天：${stats.count} 次输出 · ${stats.pages} 页`;
               statsEl.classList.toggle("hidden", !hasItems);
             }
 
             const hint = document.getElementById("printHistoryLimitHint");
-            if (hint) hint.textContent = hasItems ? `${this._list.length}/${this.maxItems} 条` : "";
+            if (hint) {
+              hint.textContent = !hasItems ? "" : filtering ? `匹配 ${matches.length}/${this._list.length} 条` : `${this._list.length}/${this.maxItems} 条`;
+            }
 
             ["printHistoryExportBtn", "printHistoryClearBtn"].forEach((id) => {
               const el = document.getElementById(id);
               if (el) el.classList.toggle("hidden", !hasItems);
             });
 
-            this._list.forEach((item, index) => container.appendChild(this._createRow(item, index)));
+            const shown = matches.slice(0, this._visibleCount);
+            shown.forEach(({ item, index }) => container.appendChild(this._createRow(item, index)));
+
+            if (matches.length > shown.length) {
+              const more = document.createElement("button");
+              more.className = "w-full mt-1 py-1 rounded text-[11px] text-slate-500 hover:text-red-600 hover:bg-gray-100 font-medium transition";
+              more.textContent = `加载更多（剩余 ${matches.length - shown.length} 条）`;
+              more.onclick = () => this.showMore();
+              container.appendChild(more);
+            }
           },
 
           canReplay: function (item) {
@@ -1684,8 +1805,10 @@
             Utils.toast("打印历史已清空");
           },
 
+          // 导出当前视图：有搜索/筛选时只导出匹配的记录
           exportCSV: function () {
-            if (!this._list.length) {
+            const list = this._filtered().map((row) => row.item);
+            if (!list.length) {
               Utils.toast("暂无可导出的历史记录", "info");
               return;
             }
@@ -1705,7 +1828,7 @@
               "数据行数",
               "错误",
             ];
-            const rows = this._list.map((item) => {
+            const rows = list.map((item) => {
               const kindInfo = this.kindMeta[item.kind] || this.kindMeta.print;
               const m = item.meta || {};
               return [
@@ -1729,7 +1852,7 @@
               .map((cells) => cells.map((cell) => `"${String(cell === undefined || cell === null ? "" : cell).replace(/"/g, '""')}"`).join(","))
               .join("\r\n");
             App.io._downloadBlob(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }), `打印历史_${Date.now()}.csv`);
-            Utils.toast("打印历史已导出");
+            Utils.toast(`打印历史已导出（${rows.length} 条）`);
           },
         },
 
