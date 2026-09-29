@@ -194,6 +194,18 @@
         overflow-y: auto;
       }
 
+      /* 打印 / 导出历史下拉菜单 */
+      .print-history-menu {
+        width: 340px;
+        left: 0;
+        padding: 0.4rem;
+      }
+
+      .print-history-list {
+        max-height: 340px;
+        overflow-y: auto;
+      }
+
       /* 导出按钮：主按钮单击打印，箭头按钮点击展开导出菜单（不使用 hover） */
       .dropdown.export-dropdown:hover > .dropdown-menu {
         display: none;

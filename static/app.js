@@ -1230,6 +1230,509 @@
           },
         },
 
+        // --- 打印 / 输出历史 ---
+        // 打印与导出（PDF / PNG / SVG）完成后记录一条，可重新输出或恢复设计。
+        // 注意：浏览器不会告知是否真正出纸，也无法区分“打印”与“取消”，
+        // 因此状态只记录到“已发起 / 对话框已关闭（未确认）”。
+        printHistory: {
+          storageKey: "paperstudio:print-history:v1",
+          maxItems: 30,
+          maxTotalBytes: 20 * 1024 * 1024,
+          maxItemBytes: 4 * 1024 * 1024,
+          thumbnailMultiplier: 0.2,
+          statusFallbackMs: 10 * 60 * 1000,
+          kindMeta: {
+            print: { label: "打印", icon: "ph-printer", color: "text-red-500" },
+            pdf: { label: "导出 PDF", icon: "ph-file-pdf", color: "text-red-500" },
+            png: { label: "导出 PNG", icon: "ph-file-png", color: "text-blue-500" },
+            svg: { label: "导出 SVG", icon: "ph-file-svg", color: "text-emerald-600" },
+          },
+          statusText: {
+            started: "已发起",
+            done: "已完成",
+            unknown: "未确认",
+            failed: "失败",
+          },
+          _list: [],
+          _chain: null,
+          _ready: false,
+
+          init: async function () {
+            await this._load();
+            this._ready = true;
+            this.render();
+          },
+
+          _load: async function () {
+            try {
+              const stored = await idbKeyval.get(this.storageKey);
+              const list = Array.isArray(stored) ? stored.filter((r) => r && r.kind && r.timestamp) : [];
+              // 修复遗留的“进行中”记录（例如打印后直接关闭页面）
+              list.forEach((item) => {
+                if (item.status === "started") item.status = "unknown";
+              });
+              this._list = list;
+            } catch (e) {
+              console.warn("读取打印历史失败", e);
+              this._list = [];
+            }
+          },
+
+          _persist: async function () {
+            try {
+              await idbKeyval.set(this.storageKey, this._list);
+            } catch (e) {
+              console.error("保存打印历史失败", e);
+              Utils.toast("打印历史写入失败，存储空间可能不足", "error");
+            }
+          },
+
+          // 所有写操作串行化，避免连续输出时互相覆盖
+          _queue: function (task) {
+            this._chain = (this._chain || Promise.resolve()).then(async () => {
+              if (!this._ready) {
+                await this._load();
+                this._ready = true;
+              }
+              return task();
+            });
+            return this._chain.catch((e) => console.error("打印历史任务失败", e));
+          },
+
+          _hash: function (str) {
+            let h = 5381;
+            for (let i = 0; i < str.length; i++) {
+              h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+            }
+            return (h >>> 0).toString(36);
+          },
+
+          // 与打印/导出实际页数保持一致：标签在设计模式下会先进入预览再批量输出
+          _estimatePages: function () {
+            if (App.state.paperType === "label" && App.state.label.mode === "design") {
+              const ds = App.state.dataSource;
+              const cfg = App.paper.getSettings();
+              const items = (ds.isActive && ds.data && ds.data.length ? ds.data.length : 1) * Math.max(1, cfg.labelQuantity || 1);
+              const perPage = Math.max(1, (cfg.labelCols || 1) * (cfg.labelRows || 1));
+              return Math.max(1, Math.ceil(items / perPage));
+            }
+            return App.dataSource.calculateTotalPages();
+          },
+
+          _collectMeta: function () {
+            const s = App.paper.getSettings();
+            const ds = App.state.dataSource;
+            const { w, h } = App.state.currentPaper;
+            const total = this._estimatePages();
+            return {
+              paperType: s.type,
+              paperLabel: App.paper.defaults[s.type]?.label || "设计稿",
+              paperSize: document.getElementById("paperSize")?.value || "",
+              width: w,
+              height: h,
+              pages: App.state.printCurrentOnly ? 1 : total,
+              totalPages: total,
+              copies: Math.max(1, s.labelQuantity || 1),
+              currentOnly: !!App.state.printCurrentOnly,
+              dataSource:
+                ds && ds.isActive
+                  ? { fileName: ds.fileName || "", sheet: ds.currentSheet || "", rows: Array.isArray(ds.data) ? ds.data.length : 0 }
+                  : null,
+            };
+          },
+
+          _buildEntry: function (kind, extra = {}, withData = true) {
+            const meta = { ...this._collectMeta(), ...extra };
+            const entry = {
+              id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+              kind: this.kindMeta[kind] ? kind : "print",
+              timestamp: Date.now(),
+              status: meta.status || "done",
+              error: String(meta.error || ""),
+              count: 1,
+              thumbnail: "",
+              hash: "",
+              size: 0,
+              data: null,
+            };
+            delete meta.status;
+            delete meta.error;
+            entry.meta = meta;
+            if (!withData) return entry;
+
+            try {
+              const snapshot = App.project.buildSnapshot({
+                includeDataSource: true,
+                thumbnailMultiplier: this.thumbnailMultiplier,
+              });
+              entry.thumbnail = typeof snapshot.thumbnail === "string" ? snapshot.thumbnail : "";
+              entry.hash = this._hash(
+                `${entry.kind}|${JSON.stringify(snapshot.canvasData)}|${JSON.stringify(snapshot.settings)}|${snapshot.paperSize}`,
+              );
+              const size = new TextEncoder().encode(JSON.stringify(snapshot)).length;
+              if (size <= this.maxItemBytes) {
+                entry.size = size;
+                entry.data = snapshot;
+              } else {
+                // 快照过大：只保留元信息与缩略图，无法重新输出
+                entry.oversize = true;
+              }
+            } catch (e) {
+              console.warn("生成打印历史快照失败", e);
+            }
+            return entry;
+          },
+
+          // 超出上限时先丢弃最旧的完整快照，仅保留元信息
+          _trim: function () {
+            if (this._list.length > this.maxItems) this._list.length = this.maxItems;
+            let total = this._list.reduce((sum, item) => sum + (item.size || 0), 0);
+            for (let i = this._list.length - 1; i >= 0 && total > this.maxTotalBytes; i--) {
+              const item = this._list[i];
+              if (!item.data) continue;
+              total -= item.size || 0;
+              item.data = null;
+              item.size = 0;
+              item.stripped = true;
+            }
+          },
+
+          // 合并条件：与最新一条内容相同、同类型、且快照仍可用
+          _mergeTarget: function (kind, built) {
+            const newest = this._list[0];
+            if (!newest) return null;
+            if (newest.kind !== kind) return null;
+            if (newest.status === "failed") return null;
+            if (newest.stripped || !newest.data || !built.hash) return null;
+            return newest.hash === built.hash ? newest : null;
+          },
+
+          _applyMerge: function (target, built, status) {
+            target.timestamp = built.timestamp;
+            target.status = status;
+            target.count = (target.count || 1) + 1;
+            target.meta = built.meta;
+            if (built.thumbnail) target.thumbnail = built.thumbnail;
+            if (status !== "failed") target.error = "";
+          },
+
+          // 输出前登记一条进行中的记录（打印对话框可能长时间不关闭）
+          begin: async function (kind, meta = {}) {
+            let entry = null;
+            await this._queue(async () => {
+              const built = this._buildEntry(kind, { ...meta, status: "started" }, true);
+              const target = this._mergeTarget(built.kind, built);
+              if (target) {
+                this._applyMerge(target, built, "started");
+                entry = target;
+              } else {
+                this._list.unshift(built);
+                entry = built;
+              }
+              this._trim();
+              await this._persist();
+              this.render();
+            });
+            return entry;
+          },
+
+          // 更新状态；已结束的记录不再被覆盖（failed 例外，用于补记错误）
+          settle: async function (id, status, extra = {}) {
+            if (!id) return;
+            await this._queue(async () => {
+              const item = this._list.find((r) => r.id === id);
+              if (!item) return;
+              if (item.status !== "started" && status !== "failed") return;
+              item.status = status;
+              if (extra.error) item.error = String(extra.error);
+              if (extra.pages) item.meta.pages = extra.pages;
+              await this._persist();
+              this.render();
+            });
+          },
+
+          // 一步登记已完成的记录（导出 PDF / PNG / SVG，或直接登记失败）
+          log: async function (kind, meta = {}) {
+            let entry = null;
+            await this._queue(async () => {
+              const built = this._buildEntry(kind, meta, meta.status !== "failed");
+              const target = this._mergeTarget(built.kind, built);
+              if (target) {
+                this._applyMerge(target, built, built.status);
+                entry = target;
+              } else {
+                this._list.unshift(built);
+                entry = built;
+              }
+              this._trim();
+              await this._persist();
+              this.render();
+            });
+            return entry;
+          },
+
+          // 打印对话框关闭（打印或取消都会触发），无法区分是否真正出纸
+          attachPrintLifecycle: function (frame, entry) {
+            if (!entry || !frame || !frame.contentWindow) return;
+            let settled = false;
+            const finish = (status) => {
+              if (settled) return;
+              settled = true;
+              this.settle(entry.id, status);
+            };
+            try {
+              frame.contentWindow.addEventListener("afterprint", () => finish("done"), { once: true });
+            } catch (e) {
+              console.warn("无法监听打印完成事件", e);
+            }
+            // 兜底：部分浏览器（如 Safari）不触发 afterprint，避免长期停留在“已发起”
+            setTimeout(() => finish("unknown"), this.statusFallbackMs);
+          },
+
+          getStats: function () {
+            const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+            return this._list.reduce(
+              (acc, item) => {
+                if (item.timestamp >= since) {
+                  const times = item.count || 1;
+                  acc.count += times;
+                  acc.pages += (item.meta && item.meta.pages ? item.meta.pages : 0) * times;
+                }
+                return acc;
+              },
+              { count: 0, pages: 0 },
+            );
+          },
+
+          _timeText: function (ts) {
+            const diff = Date.now() - ts;
+            const min = Math.floor(diff / 60000);
+            if (min < 1) return "刚刚";
+            if (min < 60) return `${min} 分钟前`;
+            const hour = Math.floor(min / 60);
+            if (hour < 24) return `${hour} 小时前`;
+            const day = Math.floor(hour / 24);
+            if (day < 7) return `${day} 天前`;
+            return new Date(ts).toLocaleString();
+          },
+
+          _createRow: function (item, index) {
+            const kindInfo = this.kindMeta[item.kind] || this.kindMeta.print;
+            const m = item.meta || {};
+
+            const row = document.createElement("div");
+            row.className = "flex items-start gap-2 rounded-lg border border-gray-100 bg-white p-2";
+
+            const thumb = document.createElement("div");
+            thumb.className = "h-10 w-10 shrink-0 rounded border border-gray-200 bg-white flex items-center justify-center overflow-hidden";
+            if (item.thumbnail && String(item.thumbnail).startsWith("data:image/")) {
+              const img = document.createElement("img");
+              img.src = item.thumbnail;
+              img.alt = "";
+              img.className = "h-full w-full object-contain";
+              thumb.appendChild(img);
+            } else {
+              const icon = document.createElement("i");
+              icon.className = `ph ${kindInfo.icon} text-lg ${kindInfo.color}`;
+              thumb.appendChild(icon);
+            }
+
+            const info = document.createElement("div");
+            info.className = "flex-1 min-w-0 text-[11px] text-slate-500";
+
+            const title = document.createElement("div");
+            title.className = "flex items-center gap-1 text-slate-700 font-medium";
+            const badge = document.createElement("i");
+            badge.className = `ph ${kindInfo.icon} text-sm shrink-0 ${kindInfo.color}`;
+            const titleText = document.createElement("span");
+            titleText.className = "truncate";
+            titleText.textContent = `${kindInfo.label} · ${m.paperLabel || "设计稿"}${m.paperSize ? " " + m.paperSize : ""}`;
+            title.append(badge, titleText);
+
+            const detail = document.createElement("div");
+            detail.className = "truncate";
+            const parts = [
+              this._timeText(item.timestamp),
+              `${m.width || 0}×${m.height || 0}mm`,
+              `${m.pages || 0} 页${(m.copies || 1) > 1 ? ` × ${m.copies} 份` : ""}`,
+            ];
+            if ((item.count || 1) > 1) parts.push(`重复 ${item.count} 次`);
+            const statusText = this.statusText[item.status] || "";
+            if (statusText && item.status !== "done") parts.push(statusText);
+            detail.textContent = parts.join(" · ");
+
+            info.append(title, detail);
+
+            if (m.dataSource && m.dataSource.fileName) {
+              const dsLine = document.createElement("div");
+              dsLine.className = "truncate text-[10px] text-slate-400";
+              dsLine.textContent = `数据源：${m.dataSource.fileName}${m.dataSource.sheet ? " / " + m.dataSource.sheet : ""}（${m.dataSource.rows} 条）`;
+              info.appendChild(dsLine);
+            }
+            if (item.error) {
+              const errLine = document.createElement("div");
+              errLine.className = "truncate text-[10px] text-red-500";
+              errLine.textContent = item.error;
+              info.appendChild(errLine);
+            }
+
+            const actions = document.createElement("div");
+            actions.className = "flex items-center gap-0.5 shrink-0";
+
+            const replayBtn = document.createElement("button");
+            replayBtn.className =
+              "px-1.5 py-1 rounded text-[11px] font-medium " +
+              (item.data ? "text-red-600 bg-red-50 hover:bg-red-100" : "text-slate-300 cursor-not-allowed");
+            replayBtn.textContent = "重做";
+            replayBtn.title = item.data ? `恢复该设计并${kindInfo.label}` : "该记录的快照已被清理，无法重新输出";
+            replayBtn.disabled = !item.data;
+            replayBtn.onclick = () => this.replay(index);
+
+            const restoreBtn = document.createElement("button");
+            restoreBtn.className = "p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-gray-100 transition disabled:opacity-40 disabled:cursor-not-allowed";
+            restoreBtn.title = item.data ? "恢复该设计到画布（不输出）" : "该记录的快照已被清理，无法恢复";
+            restoreBtn.innerHTML = '<i class="ph ph-arrow-counter-clockwise text-xs"></i>';
+            restoreBtn.disabled = !item.data;
+            restoreBtn.onclick = () => this.restore(index);
+
+            const delBtn = document.createElement("button");
+            delBtn.className = "p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition";
+            delBtn.title = "删除此记录";
+            delBtn.innerHTML = '<i class="ph ph-x text-xs"></i>';
+            delBtn.onclick = () => this.remove(index);
+
+            actions.append(replayBtn, restoreBtn, delBtn);
+            row.append(thumb, info, actions);
+            return row;
+          },
+
+          render: function () {
+            const container = document.getElementById("printHistoryList");
+            if (!container) return;
+            container.innerHTML = "";
+
+            const hasItems = this._list.length > 0;
+            const emptyEl = document.getElementById("printHistoryEmpty");
+            if (emptyEl) emptyEl.classList.toggle("hidden", hasItems);
+
+            const statsEl = document.getElementById("printHistoryStats");
+            if (statsEl) {
+              const stats = this.getStats();
+              statsEl.textContent = `近 7 天：${stats.count} 次输出 · ${stats.pages} 页`;
+              statsEl.classList.toggle("hidden", !hasItems);
+            }
+
+            const hint = document.getElementById("printHistoryLimitHint");
+            if (hint) hint.textContent = hasItems ? `${this._list.length}/${this.maxItems} 条` : "";
+
+            ["printHistoryExportBtn", "printHistoryClearBtn"].forEach((id) => {
+              const el = document.getElementById(id);
+              if (el) el.classList.toggle("hidden", !hasItems);
+            });
+
+            this._list.forEach((item, index) => container.appendChild(this._createRow(item, index)));
+          },
+
+          canReplay: function (item) {
+            if (!item) return false;
+            if (item.data) return true;
+            Utils.toast(item.oversize ? "该记录快照过大未保存，无法重新输出" : "该记录的快照已被容量清理，无法重新输出", "info");
+            return false;
+          },
+
+          replay: async function (index) {
+            const item = this._list[index];
+            if (!this.canReplay(item)) return;
+            const kindInfo = this.kindMeta[item.kind] || this.kindMeta.print;
+            const ok = window.confirm(
+              `将用该记录的设计覆盖当前画布，然后${kindInfo.label}。当前未保存的修改会丢失（草稿箱仍保留自动保存）。是否继续？`,
+            );
+            if (!ok) return;
+            App.ui.showLoading("正在准备重新输出...");
+            await App.io.loadProjectData(item.data, { markUnsaved: true });
+            if (item.kind === "print") await App.io.print();
+            else if (item.kind === "pdf") await App.io.exportPDF();
+            else if (item.kind === "png") await App.io.exportPNG();
+            else if (item.kind === "svg") await App.io.exportSVG();
+          },
+
+          restore: function (index) {
+            const item = this._list[index];
+            if (!this.canReplay(item)) return;
+            if (!window.confirm("将用该记录的设计覆盖当前画布，是否继续？")) return;
+            App.ui.showLoading("正在恢复历史设计...");
+            App.io.loadProjectData(item.data, { markUnsaved: true });
+          },
+
+          remove: async function (index) {
+            if (!this._list[index]) return;
+            this._list.splice(index, 1);
+            await this._queue(async () => {
+              await this._persist();
+              this.render();
+            });
+          },
+
+          clearAll: async function () {
+            if (!this._list.length) return;
+            if (!window.confirm("确定清空全部打印历史吗？")) return;
+            this._list = [];
+            await this._queue(async () => {
+              await this._persist();
+              this.render();
+            });
+            Utils.toast("打印历史已清空");
+          },
+
+          exportCSV: function () {
+            if (!this._list.length) {
+              Utils.toast("暂无可导出的历史记录", "info");
+              return;
+            }
+            const header = [
+              "时间",
+              "类型",
+              "状态",
+              "纸张类型",
+              "纸张尺寸",
+              "实际尺寸",
+              "页数",
+              "份数",
+              "重复次数",
+              "仅当前页",
+              "数据源文件",
+              "工作表",
+              "数据行数",
+              "错误",
+            ];
+            const rows = this._list.map((item) => {
+              const kindInfo = this.kindMeta[item.kind] || this.kindMeta.print;
+              const m = item.meta || {};
+              return [
+                new Date(item.timestamp).toLocaleString(),
+                kindInfo.label,
+                this.statusText[item.status] || item.status,
+                m.paperLabel || "",
+                m.paperSize || "",
+                `${m.width || 0}×${m.height || 0}mm`,
+                m.pages || 0,
+                m.copies || 1,
+                item.count || 1,
+                m.currentOnly ? "是" : "否",
+                m.dataSource ? m.dataSource.fileName : "",
+                m.dataSource ? m.dataSource.sheet : "",
+                m.dataSource ? m.dataSource.rows : "",
+                item.error || "",
+              ];
+            });
+            const csv = [header, ...rows]
+              .map((cells) => cells.map((cell) => `"${String(cell === undefined || cell === null ? "" : cell).replace(/"/g, '""')}"`).join(","))
+              .join("\r\n");
+            App.io._downloadBlob(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }), `打印历史_${Date.now()}.csv`);
+            Utils.toast("打印历史已导出");
+          },
+        },
+
         dataSource: {
           getCanvasState: function () {
             const objs = App.canvas.getObjects();
@@ -8101,7 +8604,9 @@
           },
 
           print: async function () {
+            let historyEntry = null;
             try {
+              historyEntry = await App.printHistory.begin("print");
               const css = this._getFontCss() + " body { display: block !important; margin: 0; } @page { margin: 0; }";
               const printFrame = this._createPrintIframe(css);
               const printDoc = printFrame.contentWindow.document;
@@ -8117,9 +8622,15 @@
                 printFrame.contentWindow.requestAnimationFrame(() => printFrame.contentWindow.requestAnimationFrame(resolve));
               });
               printFrame.contentWindow.print();
+              App.printHistory.attachPrintLifecycle(printFrame, historyEntry);
             } catch (e) {
               console.error(e);
               Utils.toast("打印生成失败: " + e.message, "error");
+              if (historyEntry) {
+                await App.printHistory.settle(historyEntry.id, "failed", { error: e.message });
+              } else {
+                await App.printHistory.log("print", { status: "failed", error: e.message });
+              }
             } finally {
               App.ui.hideLoading();
             }
@@ -8182,9 +8693,11 @@
               const fileName = `${typeLabel}_${Date.now()}.pdf`;
               pdf.save(fileName);
               Utils.toast(`PDF 导出成功 (${pageCount} 页)`);
+              await App.printHistory.log("pdf", { pages: Math.max(1, pageCount) });
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
+              App.printHistory.log("pdf", { status: "failed", error: e.message });
             } finally {
               if (App.fontManager && typeof App.fontManager.clearCache === "function") {
                 App.fontManager.clearCache();
@@ -8230,9 +8743,11 @@
                 this._downloadBlob(blob, fileName);
               });
               Utils.toast(`PNG 导出成功 (${blobs.length} 页)`);
+              await App.printHistory.log("png", { pages: Math.max(1, blobs.length), scale });
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
+              App.printHistory.log("png", { status: "failed", error: e.message });
             } finally {
               App.ui.hideLoading();
             }
@@ -8259,9 +8774,11 @@
                 this._downloadBlob(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }), fileName);
               });
               Utils.toast(`SVG 导出成功 (${svgs.length} 页)`);
+              await App.printHistory.log("svg", { pages: Math.max(1, svgs.length) });
             } catch (e) {
               console.error(e);
               Utils.toast("导出失败: " + e.message, "error");
+              App.printHistory.log("svg", { status: "failed", error: e.message });
             } finally {
               App.ui.hideLoading();
             }
@@ -8284,6 +8801,8 @@
           },
 
           loadProjectData: function (data, opts = {}) {
+            // 返回 Promise，便于调用方（例如打印历史“重做”）等待画布加载完成
+            return new Promise((resolve) => {
             App.draft.suspend();
             try {
               if (data.settings) {
@@ -8418,6 +8937,7 @@
                 App.ui.hideLoading();
                 Utils.toast("项目加载成功");
                 App.draft.resume();
+                resolve();
               };
               data.canvasData ? App.canvas.loadFromJSON(data.canvasData, done) : done();
             } catch (e) {
@@ -8425,7 +8945,9 @@
               Utils.toast("数据解析异常: " + e.message, "error");
               App.ui.hideLoading();
               App.draft.resume();
+              resolve();
             }
+            });
           },
 
           loadProject: function (file) {
@@ -9661,6 +10183,7 @@
         App.draft.ready = true;
         App.draft.checkDraft();
         App.recent.init();
+        App.printHistory.init();
         const propFontSelect = document.getElementById('propFont');
         const propFontContainer = document.getElementById('propFontPicker');
         if (propFontSelect && propFontContainer) {
