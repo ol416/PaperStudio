@@ -374,6 +374,7 @@
           },
           baseWidth: 0,
           baseHeight: 0,
+          alignToCanvas: true,
           zoom: 1,
           isPanning: false,
           clipboard: null,
@@ -8107,11 +8108,29 @@
           alignObject: function (mode) {
             const act = App.canvas.getActiveObject();
             if (!act) return;
-            const cfg = App.paper.getSettings();
-            const areaL = cfg.marginLeft,
+            let areaL, areaR, areaT, areaB;
+            if (this.isAlignToCanvas()) {
+              areaL = 0;
+              areaR = App.state.baseWidth;
+              areaT = 0;
+              areaB = App.state.baseHeight;
+            } else {
+              const cfg = App.paper.getSettings();
+              areaL = cfg.marginLeft;
               areaR = App.state.baseWidth - cfg.marginRight;
-            const areaT = cfg.marginTop,
+              areaT = cfg.marginTop;
               areaB = App.state.baseHeight - cfg.marginBottom;
+              // 纸张尺寸小于边距时版心区域会倒挂，退回纸张范围，避免对象被推出画布
+              if (areaR < areaL) {
+                areaL = 0;
+                areaR = App.state.baseWidth;
+              }
+              if (areaB < areaT) {
+                areaT = 0;
+                areaB = App.state.baseHeight;
+              }
+            }
+            act.setCoords();
             const r = act.getBoundingRect(true);
             let dx = 0,
               dy = 0;
@@ -8132,6 +8151,28 @@
               this.updateGeo(null, null, act);
               App.history.saveState();
             }
+          },
+
+          isAlignToCanvas: function () {
+            const cb = document.getElementById("alignToCanvas");
+            App.state.alignToCanvas = cb ? cb.checked : true;
+            return App.state.alignToCanvas;
+          },
+
+          updateAlignTitles: function () {
+            const scope = this.isAlignToCanvas() ? "画布" : "版心";
+            const titles = {
+              left: "左对齐于",
+              centerH: "水平居中于",
+              right: "右对齐于",
+              top: "顶对齐于",
+              middle: "垂直居中于",
+              bottom: "底对齐于",
+            };
+            Object.keys(titles).forEach((mode) => {
+              const btn = document.querySelector(`button[onclick="App.ui.alignObject('${mode}')"]`);
+              if (btn) btn.title = titles[mode] + scope;
+            });
           },
 
           distribute: function (mode) {

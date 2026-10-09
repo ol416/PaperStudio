@@ -1236,6 +1236,10 @@
             <button onclick="App.ui.alignObject('bottom')" class="tune-btn tool-icon-btn" title="底对齐于画布" disabled>
               <i class="ph ph-align-bottom-simple"></i>
             </button>
+            <label class="flex items-center gap-1 ml-1 cursor-pointer select-none" title="勾选：对齐到纸张边缘；取消：对齐到页边距围出的版心">
+              <input type="checkbox" id="alignToCanvas" class="accent-red-600 rounded scale-90" checked onchange="App.ui.updateAlignTitles()" />
+              <!-- <span class="text-gray-600 text-xs whitespace-nowrap">对齐画布</span> -->
+            </label>
           </div>
 
           <div class="w-px h-3 bg-gray-300"></div>
