@@ -728,6 +728,9 @@
               <button onclick="App.tools.addPageNum()" class="w-full text-left px-3 py-2 hover:bg-gray-100 flex items-center gap-2 text-gray-600 transition">
                 <i class="ph ph-hash text-lg"></i> 页码
               </button>
+              <button onclick="App.tools.addCopyNum()" class="w-full text-left px-3 py-2 hover:bg-gray-100 flex items-center gap-2 text-gray-600 transition">
+                <i class="ph ph-copy text-lg"></i> 份数序号
+              </button>
               <button onclick="App.tools.addSerialNumber()" class="w-full text-left px-3 py-2 hover:bg-gray-100 flex items-center gap-2 text-gray-600 transition">
                 <i class="ph ph-list-numbers text-lg"></i> 序列号
               </button>
@@ -967,8 +970,15 @@
                   </div>
 
                   <div>
-                    <label class="compact-label">打印份数</label>
-                    <input type="number" id="labelQuantity" min="1" value="1" class="w-full compact-input border rounded" oninput="App.paper.updateSettings()" />
+                    <label class="compact-label">默认份数</label>
+                    <input
+                      type="number"
+                      id="labelQuantity"
+                      min="1"
+                      value="1"
+                      title="每条数据的重复份数；若在数据源中指定了份数字段，则以该字段为准，此值用于空值回退"
+                      class="w-full compact-input border rounded"
+                      oninput="App.paper.updateSettings()" />
                   </div>
 
                   <div class="grid grid-cols-2 gap-2 cursor-pointer select-none">
@@ -1778,6 +1788,9 @@
                     <option value="- {page} -">- 1 -</option>
                     <option value="Page {page}">Page 1</option>
                     <option value="{page} / {total}">1 / 10</option>
+                    <option value="{copy} / {copies}">1 / 8 (第几份 / 共几份)</option>
+                    <option value="第 {copy} / {copies} 份">第 1 / 8 份</option>
+                    <option value="{copy}-{copies}">1-8</option>
                   </select>
                 </div>
 
@@ -2113,6 +2126,17 @@
                         <i class="ph ph-arrows-left-right"></i>
                       </button>
                     </div>
+                  </div>
+
+                  <div class="space-y-1 mt-2 pt-2 border-t border-slate-200">
+                    <label class="text-[10px] uppercase font-bold text-slate-400 tracking-wider">份数（数量）字段</label>
+                    <select
+                      id="dsCopyField"
+                      onchange="App.dataSource.setCopyField(this.value)"
+                      class="w-full text-xs border-gray-300 rounded bg-white py-1.5 focus:ring-red-500 focus:border-red-500"></select>
+                    <p class="text-[10px] text-slate-400 leading-relaxed">
+                      <i class="ph ph-info"></i> 该列数值即这一条数据的打印份数，每份占一整页；留空 / 0 / 非数字按 1 份处理。配合“份数序号”可输出 1/8、2/8 …
+                    </p>
                   </div>
                 </div>
 

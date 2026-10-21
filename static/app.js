@@ -399,6 +399,7 @@
             headers: [],
             isActive: false,
             currentDataIndex: 0,
+            copyField: "",
             imgDirHandle: null,
             imgDirId: null,
             isRequestingPerm: false,
@@ -1328,7 +1329,7 @@
             if (App.state.paperType === "label" && App.state.label.mode === "design") {
               const ds = App.state.dataSource;
               const cfg = App.paper.getSettings();
-              const items = (ds.isActive && ds.data && ds.data.length ? ds.data.length : 1) * Math.max(1, cfg.labelQuantity || 1);
+              const items = App.dataSource._totalCopiesOf();
               const perPage = Math.max(1, (cfg.labelCols || 1) * (cfg.labelRows || 1));
               return Math.max(1, Math.ceil(items / perPage));
             }
@@ -1348,7 +1349,9 @@
               height: h,
               pages: App.state.printCurrentOnly ? 1 : total,
               totalPages: total,
-              copies: Math.max(1, s.labelQuantity || 1),
+              copies: App.dataSource._virtualEnabled()
+                ? App.dataSource._rebuildVirtualMap().length
+                : Math.max(1, s.labelQuantity || 1),
               currentOnly: !!App.state.printCurrentOnly,
               dataSource:
                 ds && ds.isActive
@@ -2278,6 +2281,7 @@
             if (idx >= s.data.length) idx = 0;
             if (idx < 0) idx = 0;
             App.state.currentDataIndex = idx;
+            this._invalidateVirtual();
             if (!skipRender) {
               this.renderPage(idx);
               this.updateUI();
@@ -2290,6 +2294,8 @@
           changeSheet: function (sheetName) {
             const s = App.state.dataSource;
             s.currentSheet = sheetName;
+            s.copyField = "";
+            this._invalidateVirtual();
             if (s.isActive && s.workbook) {
               const worksheet = s.workbook.Sheets[sheetName];
               const jsonHeader = XLSX.utils.sheet_to_json(worksheet, {
@@ -2312,15 +2318,129 @@
             App.draft.schedule();
           },
 
+          // ===== 虚拟页展开：按"份数字段"把每个数据行展开为 N 个页面 =====
+          maxRowCopies: 999,
+          maxTotalCopies: 5000,
+
+          _getCopyField: function () {
+            return App.state.dataSource.copyField || "";
+          },
+
+          _defaultCopies: function (cfg) {
+            if (App.state.paperType === "label") return Math.max(1, cfg.labelQuantity || 1);
+            return 1;
+          },
+
+          _rowCopies: function (row, field, defCopies) {
+            if (!field) return defCopies;
+            const raw = row ? row[field] : undefined;
+            const rawText = String(raw === undefined || raw === null ? "" : raw).trim();
+            const n = parseInt(rawText, 10);
+            if (!rawText || !isFinite(n) || n <= 0) {
+              this._vmFallbackRows++;
+              return defCopies;
+            }
+            if (n > this.maxRowCopies) this._vmRowTruncated = true;
+            return Math.min(n, this.maxRowCopies);
+          },
+
+          _virtualEnabled: function () {
+            const s = App.state.dataSource;
+            return !!(s.isActive && s.data && s.data.length > 0 && this._getCopyField());
+          },
+
+          _invalidateVirtual: function () {
+            this._virtualMap = null;
+            this._vmSig = null;
+            this._vmTruncated = false;
+            this._vmRowTruncated = false;
+            this._vmFallbackRows = 0;
+          },
+
+          // 返回 [{ rowIndex, copyIndex, copies }, ...]，长度 = 展开后的总份数
+          _rebuildVirtualMap: function () {
+            const s = App.state.dataSource;
+            const cfg = App.paper.getSettings();
+            const field = this._getCopyField();
+            const defCopies = this._defaultCopies(cfg);
+            const sig = [field, defCopies, s.currentSheet, s.isActive ? s.data.length : 0].join("|");
+            if (this._virtualMap && this._vmSig === sig) return this._virtualMap;
+
+            this._vmSig = sig;
+            this._vmTruncated = false;
+            this._vmRowTruncated = false;
+            this._vmFallbackRows = 0;
+            const map = [];
+            if (field && s.isActive && s.data && s.data.length > 0) {
+              for (let r = 0; r < s.data.length; r++) {
+                const copies = this._rowCopies(s.data[r], field, defCopies);
+                for (let c = 0; c < copies; c++) {
+                  if (map.length >= this.maxTotalCopies) {
+                    this._vmTruncated = true;
+                    break;
+                  }
+                  map.push({ rowIndex: r, copyIndex: c, copies: copies });
+                }
+                if (this._vmTruncated) break;
+              }
+            }
+            this._virtualMap = map;
+            return map;
+          },
+
+          // 虚拟页号 -> { rowIndex(数据行), copyIndex(第几份,0基), copies(本行总份数) }
+          _resolveVirtual: function (virtualIndex) {
+            const map = this._rebuildVirtualMap();
+            if (!map || map.length === 0) return { rowIndex: Math.max(0, virtualIndex || 0), copyIndex: 0, copies: 1 };
+            const i = Math.max(0, Math.min(virtualIndex || 0, map.length - 1));
+            return map[i];
+          },
+
+          _virtualTotal: function () {
+            return Math.max(1, this._rebuildVirtualMap().length);
+          },
+
+          // 页码占位符：
+          //   {page}/{total} 为全局页号与实际总页数；
+          //   {copy}/{copies} 为组内份数序号，始终从 1 开始且不受起始页码影响。
+          _formatPageNum: function (pageConfig, vars) {
+            const start = pageConfig.startFrom || 1;
+            return String(pageConfig.format || "")
+              .replace(/\{page\}/g, (vars.page || 0) + start)
+              .replace(/\{total\}/g, vars.total || 1)
+              .replace(/\{copy\}/g, (vars.copy || 0) + 1)
+              .replace(/\{copies\}/g, vars.copies || 1);
+          },
+
+          // 当前页（虚拟页号）对应的份数信息，供编辑态预览使用
+          _currentVirtual: function () {
+            const pageIndex = App.state.currentDataIndex || 0;
+            if (this._virtualEnabled()) return this._resolveVirtual(pageIndex);
+            return { rowIndex: pageIndex, copyIndex: 0, copies: 1 };
+          },
+
+          _totalCopiesOf: function () {
+            const s = App.state.dataSource;
+            const cfg = App.paper.getSettings();
+            if (this._virtualEnabled()) return this._rebuildVirtualMap().length;
+            if (App.state.paperType === "label") {
+              const base = s.isActive && s.data.length > 0 ? s.data.length : 1;
+              return base * Math.max(1, cfg.labelQuantity || 1);
+            }
+            return s.isActive && s.data.length > 0 ? s.data.length : 1;
+          },
+
           calculateTotalPages: function () {
             const s = App.state.dataSource;
             const cfg = App.paper.getSettings();
             const canvasState = this.getCanvasState();
             if (App.state.paperType === "label" && App.state.label.mode === "preview") {
-              const baseCount = s.isActive && s.data.length > 0 ? s.data.length : 1;
-              const totalItems = baseCount * cfg.labelQuantity;
+              const totalItems = this._totalCopiesOf();
               const itemsPerPage = Math.max(1, cfg.labelCols * cfg.labelRows);
               return Math.max(1, Math.ceil(totalItems / itemsPerPage));
+            }
+            if (this._virtualEnabled()) {
+              return this._virtualTotal();
             }
 
             if (s.isActive && canvasState.hasBinding && s.workbook) {
@@ -2361,7 +2481,8 @@
             return 1;
           },
 
-          close: async function () {
+          close: async function (opts = {}) {
+            const copyField = opts.preserveCopyField ? App.state.dataSource.copyField || "" : "";
             App.state.dataSource = {
               fileHandle: null,
               fileHandleId: null,
@@ -2372,7 +2493,9 @@
               data: [],
               headers: [],
               isActive: false,
+              copyField,
             };
+            this._invalidateVirtual();
             this.updateUI();
             this.renderPage(0);
             this.updateNavUI();
@@ -2404,7 +2527,36 @@
               if (name === s.currentSheet) opt.selected = true;
               sheetSel.appendChild(opt);
             });
-            rowCount.innerText = `${s.data.length} 条数据`;
+            const copySel = document.getElementById("dsCopyField");
+            if (copySel) {
+              const prev = s.copyField || "";
+              copySel.innerHTML = "";
+              const emptyOpt = document.createElement("option");
+              emptyOpt.value = "";
+              emptyOpt.innerText = "不启用（每条 1 份）";
+              copySel.appendChild(emptyOpt);
+              s.headers.forEach((h) => {
+                if (!h) return;
+                const opt = document.createElement("option");
+                opt.value = h;
+                opt.innerText = h;
+                copySel.appendChild(opt);
+              });
+              copySel.value = s.headers.indexOf(prev) >= 0 ? prev : "";
+              s.copyField = copySel.value;
+            }
+
+            let copiesText = "";
+            if (s.copyField && s.data.length > 0) {
+              const total = this._rebuildVirtualMap().length;
+              copiesText = ` · ${total} 份`;
+              const notes = [];
+              if (this._vmRowTruncated) notes.push("单行已限幅");
+              if (this._vmTruncated) notes.push("总份数已限幅");
+              if (this._vmFallbackRows > 0) notes.push(`${this._vmFallbackRows} 行异常已回退`);
+              if (notes.length > 0) copiesText += ` (${notes.join("，")})`;
+            }
+            rowCount.innerText = `${s.data.length} 条数据${copiesText}`;
             fieldList.innerHTML = "";
             if (s.headers.length === 0) {
               fieldList.innerHTML = '<li class="text-center text-gray-400 py-4 text-xs">暂无字段</li>';
@@ -2422,6 +2574,26 @@
               });
             }
           },
+          setCopyField: function (value) {
+            const s = App.state.dataSource;
+            s.copyField = value || "";
+            this._invalidateVirtual();
+            App.state.currentDataIndex = 0;
+            this.updateUI();
+            this.updateNavUI();
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              App.label.renderPreview();
+            } else {
+              this.renderPage(0);
+            }
+            const notices = [];
+            if (this._vmRowTruncated) notices.push(`单行份数超过上限 ${this.maxRowCopies}，已按上限处理`);
+            if (this._vmTruncated) notices.push(`总份数超过上限 ${this.maxTotalCopies}，已按上限处理`);
+            if (this._vmFallbackRows > 0) notices.push(`${this._vmFallbackRows} 行份数无效，已按默认份数处理`);
+            if (notices.length > 0) Utils.toast(notices.join("；"), "info");
+            App.draft.schedule();
+          },
+
           batchUpdateBinding: function () {
             const s = App.state.dataSource;
             if (!s.isActive || !s.currentSheet) return Utils.toast("请先加载数据源", "error");
@@ -2497,6 +2669,9 @@
             pageIndex = Math.max(0, Math.min(pageIndex, max - 1));
             if (max === 0) pageIndex = 0;
             App.state.currentDataIndex = pageIndex;
+            // 虚拟页展开：同一数据行的 N 份共用行数据，仅份数序号不同
+            const virt = this._virtualEnabled() ? this._resolveVirtual(pageIndex) : { rowIndex: pageIndex, copyIndex: 0, copies: 1 };
+            const rowIndex = virt.rowIndex;
             if (!this._sheetCache) this._sheetCache = {};
             if (s.isActive && s.workbook) {
               const objs = App.canvas.getObjects();
@@ -2533,7 +2708,7 @@
               if (obj.type === "image" && obj.dataBinding && obj.dataBinding.type === "variable") {
                 if (obj.type === "image" && obj.dataBinding && obj.dataBinding.type === "variable") {
                   const originalSheet = obj.dataBinding.sheet;
-                  const filename = this._getBoundValue(obj, pageIndex);
+                  const filename = this._getBoundValue(obj, rowIndex);
                   if (obj.dataBinding.sheet !== originalSheet) {
                     obj.dataBinding.sheet = originalSheet;
                   }
@@ -2546,25 +2721,28 @@
               }
 
               if (obj.isTable && obj.tableData) {
-                this._updateTableData(obj, pageIndex);
+                this._updateTableData(obj, rowIndex);
                 continue;
               }
 
               let newRaw = null;
               let hasNewData = false;
               if (obj.isDynamicPageNum && obj.pageConfig) {
-                const currentPage = pageIndex + (obj.pageConfig.startFrom || 1);
-                const totalPages = max || 1;
-                newRaw = obj.pageConfig.format.replace("{page}", currentPage).replace("{total}", totalPages);
+                newRaw = this._formatPageNum(obj.pageConfig, {
+                  page: pageIndex,
+                  total: max || 1,
+                  copy: virt.copyIndex,
+                  copies: virt.copies,
+                });
                 hasNewData = true;
               } else if (obj.isSerialNumber && obj.serialConfig) {
-                newRaw = App.tools._formatSerialNumber(obj.serialConfig, pageIndex);
+                newRaw = App.tools._formatSerialNumber(obj.serialConfig, rowIndex);
                 hasNewData = true;
               } else if (obj.isDynamicDate && obj.dateConfig) {
                 newRaw = Utils.formatDate(new Date(), null, obj.dateConfig);
                 hasNewData = true;
               } else if (obj.dataBinding?.type === "variable") {
-                const val = this._getBoundValue(obj, pageIndex);
+                const val = this._getBoundValue(obj, rowIndex);
                 if (val !== null) {
                   newRaw = String(val);
                   hasNewData = true;
@@ -2706,13 +2884,9 @@
             const isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
             if (isLabelPreview) {
               const cfg = App.paper.getSettings();
-              const ds = App.state.dataSource;
-              let totalCount = cfg.labelQuantity;
-              if (ds.isActive && ds.data.length > 0) {
-                totalCount = ds.data.length * cfg.labelQuantity;
-              }
-              const itemsPerPage = cfg.labelCols * cfg.labelRows;
-              const maxPages = Math.ceil(totalCount / itemsPerPage);
+              const totalCount = this._totalCopiesOf();
+              const itemsPerPage = Math.max(1, cfg.labelCols * cfg.labelRows);
+              const maxPages = Math.max(1, Math.ceil(totalCount / itemsPerPage));
               let current = App.state.label.previewPage || 0;
               let next = current;
               switch (action) {
@@ -2816,7 +2990,7 @@
 
           syncFromProject: async function (meta) {
             if (!meta || !meta.fileHandleId) {
-              this.close();
+              this.close({ preserveCopyField: true });
               return;
             }
             const { fileHandleId, fileName, currentSheet } = meta;
@@ -2827,11 +3001,11 @@
                 await this.loadFromHandle(handle, fileHandleId);
               } else {
                 Utils.toast(`无法找到关联文件: ${fileName}`, "error");
-                this.close();
+                this.close({ preserveCopyField: true });
               }
             } catch (e) {
               console.error("DB Error", e);
-              this.close();
+              this.close({ preserveCopyField: true });
             }
           },
           selectImageDir: async function () {
@@ -2876,7 +3050,7 @@
               Utils.toast(`已绑定文件夹: ${handle.name}`);
               const binding = act.dataBinding;
               if (binding && binding.type === "variable") {
-                const pageIndex = App.state.currentDataIndex || 0;
+                const pageIndex = App.dataSource._currentVirtual().rowIndex;
                 const val = this._getBoundValue(act, pageIndex);
                 if (val) {
                   await this._updateImageAsync(act, val);
@@ -3966,6 +4140,7 @@
               labelGapH: floatVal("labelGapH", 2.5),
               labelGapV: floatVal("labelGapV", 2.5),
               labelQuantity: intVal("labelQuantity", 1),
+              copyField: val("dsCopyField", "") || App.state.dataSource.copyField || "",
               showCropMarks: chk("showCropMarks"),
             };
             if (chk("fitLabelSize")) {
@@ -4518,7 +4693,7 @@
                 let initialText = field;
                 const ds = App.state.dataSource;
                 if (ds.isActive && ds.data.length > 0) {
-                  const row = ds.data[App.state.currentDataIndex || 0];
+                  const row = ds.data[App.dataSource._currentVirtual().rowIndex];
                   const val = row[field];
                   if (val !== undefined && val !== null) initialText = String(val);
                 }
@@ -4859,6 +5034,35 @@
             }
 
             this._addToCanvas(obj);
+            App.ui.updateInspector();
+          },
+
+          addCopyNum: function () {
+            const virt = App.dataSource._currentVirtual();
+            const preview = App.dataSource._formatPageNum({ format: "{copy} / {copies}", startFrom: 1 }, {
+              page: App.state.currentDataIndex || 0,
+              total: App.dataSource.calculateTotalPages(),
+              copy: virt.copyIndex,
+              copies: virt.copies,
+            });
+            const copyObj = new fabric.IText(preview, {
+              left: App.state.baseWidth / 2,
+              top: App.state.baseHeight - Utils.mm2px(20),
+              fontSize: Utils.pt2px(20),
+              fontFamily: "SourceHanSansCN",
+              fill: "#000000",
+              originX: "center",
+              originY: "center",
+              editable: false,
+            });
+            copyObj.isDynamicPageNum = true;
+            copyObj.pageConfig = {
+              format: "{copy} / {copies}",
+              startFrom: 1,
+            };
+            copyObj.rawContent = preview;
+
+            this._addToCanvas(copyObj);
             App.ui.updateInspector();
           },
 
@@ -5712,7 +5916,7 @@
                   field,
                 };
                 if (ds.data.length > 0) {
-                  const row = ds.data[App.state.currentDataIndex || 0];
+                  const row = ds.data[App.dataSource._currentVirtual().rowIndex];
                   if (row) previewText = String(row[field] || "");
                 } else {
                   previewText = `{${field}}`;
@@ -6662,7 +6866,7 @@
               };
               if (!act.isBarcode && act.type !== "image") act.set("editable", false);
               if (ds.isActive && ds.data.length > 0 && act.dataBinding.field) {
-                const row = ds.data[App.state.currentDataIndex || 0];
+                const row = ds.data[App.dataSource._currentVirtual().rowIndex];
                 newValue = row ? String(row[act.dataBinding.field] || "") : "";
               } else {
                 newValue = act.dataBinding.field ? `{${act.dataBinding.field}}` : act.isBarcode ? "123456" : "变量预览";
@@ -6681,7 +6885,7 @@
                 };
               }
               if (!act.isBarcode) act.set("editable", false);
-              newValue = App.tools._formatSerialNumber(act.serialConfig, App.state.currentDataIndex || 0);
+              newValue = App.tools._formatSerialNumber(act.serialConfig, App.dataSource._currentVirtual().rowIndex);
             } else if (type === "date") {
               act.isDynamicDate = true;
               if (!act.dateConfig) {
@@ -7331,9 +7535,14 @@
             const act = App.canvas.getActiveObject();
             if (!act || !act.isDynamicPageNum) return;
             act.pageConfig[key] = value;
-            const currentPage = (App.state.currentDataIndex || 0) + act.pageConfig.startFrom;
-            const totalPages = App.dataSource.calculateTotalPages();
-            let text = act.pageConfig.format.replace("{page}", currentPage).replace("{total}", totalPages);
+            const virt = App.dataSource._currentVirtual();
+            const text = App.dataSource._formatPageNum(act.pageConfig, {
+              page: App.state.currentDataIndex || 0,
+              total: App.dataSource.calculateTotalPages(),
+              copy: virt.copyIndex,
+              copies: virt.copies,
+            });
+            act.rawContent = text;
             act.set("text", text);
             App.canvas.requestRenderAll();
             App.history.saveState();
@@ -7356,16 +7565,15 @@
             }
 
             this.updateSerialPreview(act.serialConfig);
+            const currentIndex = App.dataSource._currentVirtual().rowIndex;
             if (key === "generateCount") {
               App.dataSource.updateNavUI();
               if (act.serialConfig.showTotal) {
-                const currentIndex = App.state.currentDataIndex || 0;
                 let newText = App.tools._formatSerialNumber(act.serialConfig, currentIndex);
                 act.rawContent = newText;
                 App.content.render(act);
               }
             } else {
-              const currentIndex = App.state.currentDataIndex || 0;
               let newText = App.tools._formatSerialNumber(act.serialConfig, currentIndex);
               act.rawContent = newText;
               App.content.render(act);
@@ -7932,7 +8140,7 @@
               }
 
               const dataList = App.dataSource._sheetCache[targetSheet];
-              const pageIndex = App.state.currentDataIndex || 0;
+              const pageIndex = App.dataSource._currentVirtual().rowIndex;
               let newRawValue = "";
               if (dataList && dataList.length > 0) {
                 const safeIndex = Math.min(pageIndex, dataList.length - 1);
@@ -9153,6 +9361,7 @@
             return new Promise((resolve) => {
             App.draft.suspend();
             try {
+              App.state.dataSource.copyField = data.settings?.copyField || "";
               if (data.settings) {
                 const s = data.settings;
                 const setV = (id, v) => document.getElementById(id) && (document.getElementById(id).value = v);
@@ -9598,8 +9807,11 @@
               const startX = cfg.marginLeft;
               const startY = cfg.marginTop;
               const ds = App.state.dataSource;
+              const useVirtual = App.dataSource._virtualEnabled();
               let totalLabelCount = 0;
-              if (ds.isActive && ds.data.length > 0) {
+              if (useVirtual) {
+                totalLabelCount = App.dataSource._rebuildVirtualMap().length;
+              } else if (ds.isActive && ds.data.length > 0) {
                 totalLabelCount = ds.data.length * cfg.labelQuantity;
               } else {
                 totalLabelCount = cfg.labelQuantity;
@@ -9619,8 +9831,16 @@
                   if (globalIndex >= totalLabelCount) break;
                   const currentX = startX + c * (labelW + gapH);
                   const currentY = startY + r * (labelH + gapV);
-                  const dataIndex = ds.isActive && ds.data.length > 0 ? Math.floor(globalIndex / cfg.labelQuantity) : globalIndex;
-                  await this._cloneDesignTo(designJSON, currentX, currentY, dataIndex, currentPage, totalPages);
+                  let dataIndex = globalIndex;
+                  let copyInfo = { copyIndex: globalIndex % Math.max(1, cfg.labelQuantity), copies: Math.max(1, cfg.labelQuantity) };
+                  if (useVirtual) {
+                    const virt = App.dataSource._resolveVirtual(globalIndex);
+                    dataIndex = virt.rowIndex;
+                    copyInfo = { copyIndex: virt.copyIndex, copies: virt.copies };
+                  } else if (ds.isActive && ds.data.length > 0) {
+                    dataIndex = Math.floor(globalIndex / Math.max(1, cfg.labelQuantity));
+                  }
+                  await this._cloneDesignTo(designJSON, currentX, currentY, dataIndex, currentPage, totalPages, copyInfo);
                   drawnCount++;
                 }
               }
@@ -9664,7 +9884,8 @@
             }
           },
 
-          _cloneDesignTo: function (json, x, y, dataIndex, currentPage, totalPages) {
+          _cloneDesignTo: function (json, x, y, dataIndex, currentPage, totalPages, copyInfo) {
+            const copy = copyInfo || { copyIndex: 0, copies: 1 };
             return new Promise(async (resolve) => {
               if (json.backgroundImage) {
                 await new Promise((r) => {
@@ -9697,9 +9918,12 @@
                   const prefix = o.prefix || "";
                   const suffix = o.suffix || "";
                   if (o.isDynamicPageNum && o.pageConfig) {
-                    const pageNum = currentPage + (o.pageConfig.startFrom || 1);
-                    const total = totalPages || 1;
-                    const pageText = o.pageConfig.format.replace("{page}", pageNum).replace("{total}", total);
+                    const pageText = App.dataSource._formatPageNum(o.pageConfig, {
+                      page: currentPage,
+                      total: totalPages || 1,
+                      copy: copy.copyIndex,
+                      copies: copy.copies,
+                    });
                     o.rawContent = pageText;
                     o.set("text", prefix + pageText + suffix);
                   }
