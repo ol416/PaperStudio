@@ -4791,14 +4791,19 @@
                   if (val !== undefined && val !== null) initialText = String(val);
                 }
 
-                const textObj = new fabric.IText(initialText, {
+                const textObj = new fabric.Textbox(initialText, {
                   left: x,
                   top: y,
+                  width: Utils.mm2px(40),
                   fontSize: Utils.pt2px(20),
                   fontFamily: "SourceHanSansCN",
                   fill: "#000000",
                   originX: "left",
                   originY: "top",
+                  splitByGrapheme: false,
+                  keepWordsIntact: true,
+                  lockScalingFlip: true,
+                  minWidth: 20,
                 });
                 textObj.dataBinding = {
                   type: "variable",
