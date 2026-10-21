@@ -6976,6 +6976,7 @@
                 act.set("originX", validOrigin);
                 act.setPositionByOrigin(anchorPoint, validOrigin, "top");
                 act.setCoords();
+                this.updateInspector();
               } else {
                 if (key === "strokeWidth" && val > 0 && (!act.stroke || act.stroke === "transparent")) {
                   act.set("stroke", "#666666");
@@ -7162,6 +7163,16 @@
             document.querySelectorAll(".align-btn").forEach((btn) => (btn.disabled = !canAlign));
             const canDistribute = count >= 3;
             document.querySelectorAll(".dist-btn").forEach((btn) => (btn.disabled = !canDistribute));
+            const isParagraph = count === 1 && type === "textbox";
+            document.getElementById("paragraphAlignTools")?.classList.toggle("hidden", !isParagraph);
+            document.getElementById("paragraphAlignDivider")?.classList.toggle("hidden", !isParagraph);
+            document.querySelectorAll(".paragraph-align-btn").forEach((btn) => {
+              btn.disabled = !isParagraph;
+              const isActive = isParagraph && act.textAlign === btn.dataset.paragraphAlign;
+              btn.classList.toggle("bg-red-50", isActive);
+              btn.classList.toggle("text-red-600", isActive);
+              btn.setAttribute("aria-pressed", String(!!isActive));
+            });
             const btnGroup = document.getElementById("btnGroup");
             const btnUngroup = document.getElementById("btnUngroup");
             if (btnGroup) {
@@ -7705,6 +7716,22 @@
           _updateTextPanel: function (ui, act) {
             ui("textProps").show(true);
             ui("sharedProps").show(true);
+            const isParagraph = act.type === "textbox";
+            const align = act.textAlign || "left";
+            const alignLabels = {
+              left: "靠左",
+              center: "居中",
+              right: "靠右",
+              justify: "两端对齐",
+            };
+            ui("textAlignLabel").text(isParagraph ? "段内位置" : "文字对齐");
+            ui("textAlignValue").text(alignLabels[align] || alignLabels.left);
+            document.querySelectorAll(".text-align-btn").forEach((btn) => {
+              const isActive = btn.dataset.textAlign === align;
+              btn.classList.toggle("bg-red-50", isActive);
+              btn.classList.toggle("text-red-600", isActive);
+              btn.setAttribute("aria-pressed", String(isActive));
+            });
             ui("propLineHeight")
               .parentShow(true)
               .val(act.lineHeight || 1.2);

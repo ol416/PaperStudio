@@ -1227,6 +1227,24 @@
 
           <div class="w-px h-3 bg-gray-300"></div>
 
+          <div id="paragraphAlignTools" class="hidden flex items-center gap-1">
+            <span class="text-[10px] font-bold text-slate-400 whitespace-nowrap">段内位置</span>
+            <button data-paragraph-align="left" onclick="App.ui.setProp('textAlign', 'left')" class="paragraph-align-btn tool-icon-btn" title="文字靠左" aria-label="文字在段落内靠左">
+              <i class="ph ph-text-align-left"></i>
+            </button>
+            <button data-paragraph-align="center" onclick="App.ui.setProp('textAlign', 'center')" class="paragraph-align-btn tool-icon-btn" title="文字居中" aria-label="文字在段落内居中">
+              <i class="ph ph-text-align-center"></i>
+            </button>
+            <button data-paragraph-align="right" onclick="App.ui.setProp('textAlign', 'right')" class="paragraph-align-btn tool-icon-btn" title="文字靠右" aria-label="文字在段落内靠右">
+              <i class="ph ph-text-align-right"></i>
+            </button>
+            <button data-paragraph-align="justify" onclick="App.ui.setProp('textAlign', 'justify')" class="paragraph-align-btn tool-icon-btn" title="文字两端对齐" aria-label="文字在段落内两端对齐">
+              <i class="ph ph-text-align-justify"></i>
+            </button>
+          </div>
+
+          <div id="paragraphAlignDivider" class="hidden w-px h-3 bg-gray-300"></div>
+
           <div class="flex items-center gap-1">
             <button onclick="App.ui.alignObject('left')" class="tune-btn tool-icon-btn" title="左对齐于画布" disabled>
               <i class="ph ph-align-left-simple"></i>
@@ -1674,19 +1692,25 @@
                     <input type="color" id="propColor" value="#000000" oninput="App.ui.setProp('fill', this.value)" class="absolute -top-2 -left-2 w-[150%] h-20 cursor-pointer p-0 border-0" />
                   </div>
                 </div>
-                <div class="flex border rounded overflow-hidden flex-1">
-                  <button onclick="App.ui.setProp('textAlign', 'left')" class="flex-1 py-1 hover:bg-gray-50 border-r flex justify-center" title="左对齐">
-                    <i class="ph ph-text-align-left"></i>
-                  </button>
-                  <button onclick="App.ui.setProp('textAlign', 'center')" class="flex-1 py-1 hover:bg-gray-50 border-r flex justify-center" title="居中">
-                    <i class="ph ph-text-align-center"></i>
-                  </button>
-                  <button onclick="App.ui.setProp('textAlign', 'right')" class="flex-1 py-1 hover:bg-gray-50 flex justify-center" title="右对齐">
-                    <i class="ph ph-text-align-right"></i>
-                  </button>
-                  <button onclick="App.ui.setProp('textAlign', 'justify')" class="flex-1 py-1 hover:bg-gray-50 flex justify-center" title="两端对齐">
-                    <i class="ph ph-text-align-justify"></i>
-                  </button>
+                <div>
+                  <div class="flex items-center justify-between mb-1">
+                    <label id="textAlignLabel" class="compact-label mb-0">文字对齐</label>
+                    <span id="textAlignValue" class="text-[10px] text-slate-400">靠左</span>
+                  </div>
+                  <div class="flex border rounded overflow-hidden flex-1">
+                    <button data-text-align="left" onclick="App.ui.setProp('textAlign', 'left')" class="text-align-btn flex-1 py-1 hover:bg-gray-50 border-r flex justify-center" title="靠左" aria-label="文字靠左">
+                      <i class="ph ph-text-align-left"></i>
+                    </button>
+                    <button data-text-align="center" onclick="App.ui.setProp('textAlign', 'center')" class="text-align-btn flex-1 py-1 hover:bg-gray-50 border-r flex justify-center" title="居中" aria-label="文字居中">
+                      <i class="ph ph-text-align-center"></i>
+                    </button>
+                    <button data-text-align="right" onclick="App.ui.setProp('textAlign', 'right')" class="text-align-btn flex-1 py-1 hover:bg-gray-50 border-r flex justify-center" title="靠右" aria-label="文字靠右">
+                      <i class="ph ph-text-align-right"></i>
+                    </button>
+                    <button data-text-align="justify" onclick="App.ui.setProp('textAlign', 'justify')" class="text-align-btn flex-1 py-1 hover:bg-gray-50 flex justify-center" title="两端对齐" aria-label="文字两端对齐">
+                      <i class="ph ph-text-align-justify"></i>
+                    </button>
+                  </div>
                 </div>
                 <div>
                   <label class="compact-label flex justify-between"
