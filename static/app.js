@@ -546,6 +546,99 @@
           fabric.IText.prototype._renderTextLine = function (method, ctx, line, left, top, lineIndex) {
             renderJustifiedTextLine.call(this, baseRenderIText, method, ctx, line, left, top, lineIndex);
           };
+          // 混排换行：开启 keepWordsIntact 时，中文可逐字换行、英文单词保持完整，
+          // 并在可断行处插入零宽空格（U+200B）以便两端对齐时仍能拉伸汉字间距。
+          (function () {
+            const baseWrapLine = fabric.Textbox.prototype._wrapLine;
+            const CJK_RE = /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿！-￯]/;
+            const SPACE_RE = /[ \t\r]/;
+            const ZWSP = "​";
+
+            function tokenizeLine(text) {
+              const graphemes = fabric.util.string.graphemeSplit(text);
+              const tokens = [];
+              const seps = [];
+              let buf = "";
+              let spacePending = false;
+              const flush = () => {
+                if (buf) {
+                  tokens.push(buf);
+                  seps.push(spacePending ? " " : "​");
+                  spacePending = false;
+                  buf = "";
+                }
+              };
+              for (let k = 0; k < graphemes.length; k++) {
+                const g = graphemes[k];
+                if (SPACE_RE.test(g)) {
+                  flush();
+                  spacePending = true;
+                } else if (CJK_RE.test(g)) {
+                  flush();
+                  tokens.push(g);
+                  seps.push(spacePending ? " " : "​");
+                  spacePending = false;
+                } else {
+                  buf += g;
+                }
+              }
+              flush();
+              if (tokens.length) seps[0] = "";
+              return { tokens, seps };
+            }
+
+            fabric.Textbox.prototype._wrapLine = function (text, lineIndex, desiredWidth, reservedSpace) {
+              if (!this.keepWordsIntact) {
+                return baseWrapLine.call(this, text, lineIndex, desiredWidth, reservedSpace);
+              }
+              const r = reservedSpace || 0;
+              const m = this._getWidthOfCharSpacing();
+              const { tokens, seps } = tokenizeLine(text);
+              const nv = tokens.length;
+              const c = [];
+              if (nv === 0) {
+                c.push([]);
+                return c;
+              }
+              let o = 0;
+              let h = [];
+              let u = 0;
+              let g = 0;
+              let p = true;
+              let i = desiredWidth - r;
+              for (let v = 0; v < nv; v++) {
+                const tok = tokens[v];
+                const n = fabric.util.string.graphemeSplit(tok);
+                const s = this._measureWord(n, lineIndex, u);
+                u += n.length;
+                const sep = seps[v];
+                const hasSep = sep === " " || sep === ZWSP;
+                const f = hasSep ? sep : "";
+                const d = hasSep ? this._measureWord([f], lineIndex, u) : 0;
+                if (i < (o += d + s - m) && !p) {
+                  c.push(h);
+                  h = [];
+                  o = s;
+                  p = true;
+                } else {
+                  o += m;
+                }
+                if (!p && hasSep) h.push(f);
+                h = h.concat(n);
+                if (hasSep) u++;
+                p = false;
+                if (g < s) g = s;
+              }
+              c.push(h);
+              if (g + r > this.dynamicMinWidth) this.dynamicMinWidth = g - m + r;
+              return c;
+            };
+
+            const baseToObject = fabric.Textbox.prototype.toObject;
+            fabric.Textbox.prototype.toObject = function (props) {
+              return baseToObject.call(this, (props || []).concat(["keepWordsIntact"]));
+            };
+          })();
           this.canvas.on("mouse:move", (opt) => {
             const target = this.canvas.getActiveObject();
             if (target && target.__corner !== target._lastHoveredCorner) {
@@ -4964,7 +5057,8 @@
               fontSize: Utils.pt2px(20),
               fontFamily: "SourceHanSansCN",
               fill: "#000000",
-              splitByGrapheme: true,
+              splitByGrapheme: false,
+              keepWordsIntact: true,
               lockScalingFlip: true,
               minWidth: 50,
             });
@@ -6499,7 +6593,8 @@
                       textAlign: cell.align || "center",
                       originX: "center",
                       originY: "center",
-                      splitByGrapheme: true,
+                      splitByGrapheme: false,
+                      keepWordsIntact: true,
                       editable: false,
                     }),
                   );
@@ -6959,6 +7054,20 @@
                 if (Object.keys(map).length > 0) {
                   App.tableEditor.updateActiveTableStyle(map);
                 }
+                return;
+              }
+
+              if (key === "keepWordsIntact") {
+                const apply = (o) => {
+                  o.set("keepWordsIntact", val);
+                  o.set("splitByGrapheme", !val);
+                  o.initDimensions();
+                  o.setCoords();
+                };
+                if (act.type === "activeSelection") act.forEachObject(apply);
+                else apply(act);
+                App.canvas.requestRenderAll();
+                App.history.saveState();
                 return;
               }
 
@@ -7740,6 +7849,8 @@
               .parentShow(true)
               .val(act.charSpacing || 0);
             ui("charSpacingVal").val(act.charSpacing || 0);
+            const kwc = document.getElementById("keepWordsIntactCheck");
+            if (kwc) kwc.checked = !!act.keepWordsIntact;
             ui("propFont").val(act.fontFamily);
             ui("propSize").val(Utils.px2pt(act.fontSize));
             ui("propColor").val(act.fill);

@@ -1765,6 +1765,14 @@
                     "
                     class="w-full accent-red-600 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer" />
                 </div>
+                <label class="compact-label flex items-center gap-2 mt-1 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    id="keepWordsIntactCheck"
+                    class="accent-red-600 rounded scale-90"
+                    onchange="App.ui.setProp('keepWordsIntact', this.checked)" />
+                  <span>保留完整单词（中英文混排不断词）</span>
+                </label>
               </section>
               <section id="dateProps" class="hidden space-y-3 border-b border-gray-100 pb-3">
                 <div class="font-bold text-xs text-slate-500 mb-2 flex items-center gap-1"><i class="ph ph-calendar"></i> 日期时间设置</div>
