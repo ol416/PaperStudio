@@ -78,6 +78,9 @@
         "syncMode",
         "imgDirId",
         "imgDirName",
+        "batchInstanceId",
+        "templateObjectId",
+        "batchLabelOrigin",
       ];
       const DATE_FMT_OPTS = [
         {
@@ -400,10 +403,20 @@
             isActive: false,
             currentDataIndex: 0,
             copyField: "",
+            identityField: "",
             imgDirHandle: null,
             imgDirId: null,
             isRequestingPerm: false,
             imgDirCache: {},
+          },
+          batch: {
+            templateId: "",
+            templateRevision: 0,
+            templateData: null,
+            identity: { sheet: "", field: "" },
+            activeInstanceId: "",
+            activePageIndex: 0,
+            instances: [],
           },
           label: {
             mode: "design",
@@ -1058,6 +1071,11 @@
           stackSizes: [],
           totalBytes: 0,
           index: -1,
+	          stacks: Object.create(null),
+	          stackSizesByKey: Object.create(null),
+	          totalsByKey: Object.create(null),
+	          indicesByKey: Object.create(null),
+	          activeKey: "__template__",
           locked: false,
           maxSteps: 20,
           maxBytes: 32 * 1024 * 1024,
@@ -1069,12 +1087,64 @@
             };
             App.canvas.on({
               "object:modified": saveHandler,
-              "object:added": saveHandler,
-              "object:removed": saveHandler,
+	              "object:added": (e) => {
+	                App.batch.assignAddedLabelObject(e?.target);
+	                saveHandler(e);
+	              },
+	              "object:removed": (e) => {
+	                if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	                  App.batch.markLabelRemoval(e?.target);
+	                }
+	                saveHandler(e);
+	              },
             });
           },
 
+	          _key: function () {
+	            return App.state.batch.activeInstanceId || "__template__";
+	          },
+
+	          _ensure: function (key) {
+	            if (!this.stacks[key]) {
+	              this.stacks[key] = [];
+	              this.stackSizesByKey[key] = [];
+	              this.totalsByKey[key] = 0;
+	              this.indicesByKey[key] = -1;
+	            }
+	            this.activeKey = key;
+	            this.stack = this.stacks[key];
+	            this.stackSizes = this.stackSizesByKey[key];
+	            this.totalBytes = this.totalsByKey[key] || 0;
+	            this.index = this.indicesByKey[key];
+	          },
+
+	          switchTo: function (key, initialJson) {
+	            this._ensure(key || "__template__");
+	            if (initialJson && this.stack.length === 0) {
+	              this.stack.push(initialJson);
+	              const size = new TextEncoder().encode(initialJson).byteLength;
+	              this.stackSizes.push(size);
+	              this.totalBytes = size;
+	              this.index = 0;
+	              this.indicesByKey[this.activeKey] = 0;
+	              this.totalsByKey[this.activeKey] = size;
+	            }
+	            this.updateUI();
+	          },
+
           updateUI: function () {
+	            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              const id = App.batch.state.activeInstanceId;
+	              const history = App.batch._labelHistory[id];
+	              const btnUndo = document.getElementById("btnUndo");
+	              const btnRedo = document.getElementById("btnRedo");
+	              if (btnUndo && btnRedo) {
+	                btnUndo.disabled = !history || history.index <= 0;
+	                btnRedo.disabled = !history || history.index >= history.stack.length - 1;
+	              }
+	              return;
+	            }
+	            this._ensure(this._key());
             const btnUndo = document.getElementById("btnUndo");
             const btnRedo = document.getElementById("btnRedo");
             if (btnUndo && btnRedo) {
@@ -1085,7 +1155,19 @@
 
           saveState: function () {
             if (this.locked) return;
-            if (App.state.paperType === "label" && App.state.label.mode === "preview") return;
+	            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              const active = App.canvas.getActiveObject();
+	              const instanceId = active?.batchInstanceId || App.batch.state.activeInstanceId;
+	              if (!instanceId) return;
+	              App.batch.state.activeInstanceId = instanceId;
+	              App.batch.captureLabelInstance(instanceId);
+	              App.batch.recordLabelHistory(instanceId);
+	              App.state.hasUnsavedChanges = true;
+	              App.draft.schedule();
+	              return;
+	            }
+	            App.batch.captureActive();
+	            this._ensure(this._key());
             if (this.index < this.stack.length - 1) {
               this.stack = this.stack.slice(0, this.index + 1);
               this.stackSizes = this.stackSizes.slice(0, this.index + 1);
@@ -1111,6 +1193,10 @@
               this.stack.shift();
             }
             this.index = this.stack.length - 1;
+	            this.stacks[this.activeKey] = this.stack;
+	            this.stackSizesByKey[this.activeKey] = this.stackSizes;
+	            this.totalsByKey[this.activeKey] = this.totalBytes;
+	            this.indicesByKey[this.activeKey] = this.index;
             this.updateUI();
             App.state.hasUnsavedChanges = true;
             App.draft.schedule();
@@ -1122,33 +1208,55 @@
           },
 
           reset: function () {
-            this.stack = [];
-            this.stackSizes = [];
-            this.totalBytes = 0;
-            this.index = -1;
+	            this.stacks = Object.create(null);
+	            this.stackSizesByKey = Object.create(null);
+	            this.totalsByKey = Object.create(null);
+	            this.indicesByKey = Object.create(null);
+	            this.activeKey = this._key();
+	            this._ensure(this.activeKey);
             this.locked = false;
             this.saveState();
           },
 
           undo: function () {
+	            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              App.batch.undoLabel();
+	              return;
+	            }
             if (this.index <= 0) return;
-            this.load(this.stack[--this.index]);
+	            this.index--;
+	            this.indicesByKey[this.activeKey] = this.index;
+	            this.load(this.stack[this.index]);
           },
 
           redo: function () {
+	            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              App.batch.redoLabel();
+	              return;
+	            }
             if (this.index >= this.stack.length - 1) return;
-            this.load(this.stack[++this.index]);
+	            this.index++;
+	            this.indicesByKey[this.activeKey] = this.index;
+	            this.load(this.stack[this.index]);
           },
 
           load: function (jsonStr) {
             this.locked = true;
+	            this._ensure(this._key());
             App.canvas.loadFromJSON(jsonStr, () => {
               App.paper.drawGrid();
               App.canvas.renderAll();
               App.ui.updateLayerList();
               App.ui.updateInspector();
               this.locked = false;
+	              this.indicesByKey[this.activeKey] = this.index;
+	              if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	                App.batch.captureLabelInstance(App.batch.state.activeInstanceId);
+	              } else {
+	                App.batch.captureActive();
+	              }
               this.updateUI();
+	              App.draft.schedule();
             });
           },
         },
@@ -1156,6 +1264,7 @@
         project: {
           // 统一构建 .paper / 模板 / 草稿共用的工程快照
           buildSnapshot: function (opts = {}) {
+	            App.batch.captureActive();
             const settings = App.paper.getSettings();
             const fitLabelEl = document.getElementById("fitLabelSize");
             if (fitLabelEl) {
@@ -1175,7 +1284,9 @@
             }
 
             let canvasData;
-            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	            if (App.batch.state.templateData) {
+	              canvasData = App.batch._clone(App.batch.state.templateData);
+	            } else if (App.state.paperType === "label" && App.state.label.mode === "preview") {
               canvasData = typeof App.state.label.designContent === "string" ? JSON.parse(App.state.label.designContent) : App.state.label.designContent;
             } else {
               canvasData = App.canvas.toJSON(CUSTOM_PROPS);
@@ -1199,12 +1310,13 @@
                     currentSheet: dsState.currentSheet,
                     fileHandleId: dsState.fileHandleId,
                     imgDirId: dsState.imgDirId,
+	                    identityField: dsState.identityField || "",
                   }
                 : null;
             }
 
             return {
-              version: "4.2",
+	              version: "4.3",
               timestamp: new Date().toISOString(),
               settings,
               paperSize: document.getElementById("paperSize").value,
@@ -1214,7 +1326,1077 @@
               }),
               canvasData,
               dataSource,
+	              batch: App.batch.state.templateData ? App.batch.serializeState() : null,
             };
+          },
+        },
+
+        batch: {
+          _loading: false,
+	          _rendering: false,
+          _forceReload: false,
+          _identityFallback: false,
+          _restoreInstanceId: "",
+          _labelHistory: Object.create(null),
+
+          get state() {
+            return App.state.batch;
+          },
+
+          _clone: function (value) {
+            return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+          },
+
+          _same: function (a, b) {
+            return JSON.stringify(a) === JSON.stringify(b);
+          },
+
+          _newId: function () {
+            return Utils.generateUniqueId();
+          },
+
+          _assignObjectIds: function (objects) {
+            const used = new Set();
+            const visit = (obj) => {
+              if (!obj || typeof obj !== "object") return;
+              if (!obj.id || used.has(obj.id)) obj.id = this._newId();
+              used.add(obj.id);
+              (obj.objects || []).forEach(visit);
+            };
+            (objects || []).forEach(visit);
+          },
+
+          _canvasJson: function () {
+            const json = App.canvas.toJSON(CUSTOM_PROPS);
+            json.objects = (json.objects || []).filter((obj) => !obj.isGrid);
+            this._assignObjectIds(json.objects);
+            return json;
+          },
+
+          reset: function () {
+            App.state.batch = {
+              templateId: "",
+              templateRevision: 0,
+              templateData: null,
+              identity: { sheet: "", field: "" },
+              activeInstanceId: "",
+              activePageIndex: 0,
+              instances: [],
+            };
+            this._forceReload = false;
+            this._identityFallback = false;
+            this._restoreInstanceId = "";
+            this._labelHistory = Object.create(null);
+          },
+
+          loadState: function (batchData) {
+            if (!batchData || !batchData.templateData) return false;
+            const incoming = this._clone(batchData);
+            this._assignObjectIds(incoming.templateData.objects);
+            App.state.batch = {
+              templateId: incoming.templateId || this._newId(),
+              templateRevision: incoming.templateRevision || 1,
+              templateData: incoming.templateData,
+              identity: incoming.identity || { sheet: "", field: "" },
+              activeInstanceId: "",
+              activePageIndex: incoming.activePageIndex || 0,
+              instances: Array.isArray(incoming.instances) ? incoming.instances : [],
+            };
+            if (App.state.batch.identity.field) {
+              App.state.dataSource.identityField = App.state.batch.identity.field;
+            }
+            this._restoreInstanceId = incoming.activeInstanceId || "";
+            this._forceReload = true;
+            return true;
+          },
+
+          serializeState: function () {
+            const state = this.state;
+            return {
+              templateId: state.templateId,
+              templateRevision: state.templateRevision || 1,
+              templateData: this._clone(state.templateData),
+              identity: this._clone(state.identity || { sheet: "", field: "" }),
+              activeInstanceId: state.activeInstanceId || "",
+              activePageIndex: state.activePageIndex || 0,
+              instances: (state.instances || []).map((instance) => {
+                const clean = this._clone(instance);
+                delete clean._baseline;
+                return clean;
+              }),
+            };
+          },
+
+          ensureTemplate: function () {
+            const state = this.state;
+            if (state.templateData) return state.templateData;
+            const templateData = this._canvasJson();
+            state.templateId = this._newId();
+            state.templateRevision = 1;
+            state.templateData = templateData;
+            state.identity = {
+              sheet: App.state.dataSource.currentSheet || "",
+              field: App.state.dataSource.identityField || "",
+            };
+            return templateData;
+          },
+
+          invalidate: function (force = true) {
+            if (force) this._forceReload = true;
+            this._identityFallback = false;
+          },
+
+          migrateRecordKeys: function () {
+            if (!App.state.dataSource.isActive) return;
+            this.state.instances.forEach((instance) => {
+              if (!instance.source) return;
+              instance.recordKey = this._recordKey(instance.source.sheet, instance.source.rowIndex, instance.source.copyIndex);
+            });
+          },
+
+          shouldHandlePage: function (totalPages) {
+            const ds = App.state.dataSource;
+            return !!(this.state.templateData || (ds.isActive && (ds.data.length > 0 || ds.workbook)) || totalPages > 1);
+          },
+
+          _sheetRows: function (sheetName) {
+            const ds = App.state.dataSource;
+            const sheet = sheetName || ds.currentSheet;
+            if (sheet === ds.currentSheet && Array.isArray(ds.data)) return ds.data;
+            if (!ds.workbook || !ds.workbook.Sheets[sheet]) return [];
+            if (!App.dataSource._sheetCache) App.dataSource._sheetCache = {};
+            if (!App.dataSource._sheetCache[sheet]) {
+              App.dataSource._sheetCache[sheet] = XLSX.utils.sheet_to_json(ds.workbook.Sheets[sheet], {
+                raw: false,
+                dateNF: "yyyy-mm-dd",
+                defval: "",
+              });
+            }
+            return App.dataSource._sheetCache[sheet];
+          },
+
+          _fieldValue: function (sheet, rowIndex, field) {
+            if (!field) return "";
+            const row = this._sheetRows(sheet)[rowIndex];
+            if (!row) return "";
+            const value = row[field];
+            return value === undefined || value === null ? "" : String(value);
+          },
+
+          _validIdentityField: function () {
+            const ds = App.state.dataSource;
+            const field = ds.identityField || this.state.identity.field || "";
+            if (!field) return false;
+            const values = (ds.data || []).map((row) => String(row[field] ?? "").trim());
+            return values.length > 0 && values.every(Boolean) && new Set(values).size === values.length;
+          },
+
+          _recordKey: function (sheet, rowIndex, copyIndex) {
+            const ds = App.state.dataSource;
+            const field = ds.identityField || this.state.identity.field || "";
+            const row = this._sheetRows(sheet)[rowIndex];
+            if (field && row && String(row[field] ?? "").trim() !== "" && this._validIdentityField()) {
+              return `id:${field}:${String(row[field]).trim()}#copy:${copyIndex}`;
+            }
+            this._identityFallback = true;
+            return `row:${rowIndex}#copy:${copyIndex}`;
+          },
+
+          _ensureInstance: function (source, pageIndex, totalPages) {
+            const recordKey = this._recordKey(source.sheet, source.rowIndex, source.copyIndex);
+            let instance = this.state.instances.find((item) => item.recordKey === recordKey);
+            if (!instance) {
+              instance = {
+                id: this._newId(),
+                recordKey,
+                source: this._clone(source),
+                pageIndex,
+                totalPages,
+                overrides: {
+                  props: {},
+                  content: {},
+                  binding: {},
+                  added: [],
+                  removedIds: [],
+                  order: [],
+                },
+              };
+              this.state.instances.push(instance);
+            }
+            instance.source = this._clone(source);
+            instance.pageIndex = pageIndex;
+            instance.totalPages = totalPages;
+            return instance;
+          },
+
+          reconcileInstances: function (totalPages) {
+            const ds = App.state.dataSource;
+            this.state.identity = {
+              sheet: ds.currentSheet || "",
+              field: ds.identityField || "",
+            };
+            const max = Math.max(1, totalPages || App.dataSource.calculateTotalPages());
+            if (ds.isActive) {
+              for (let index = 0; index < max; index++) {
+                const virt = App.dataSource._virtualEnabled()
+                  ? App.dataSource._resolveVirtual(index)
+                  : { rowIndex: index, copyIndex: 0, copies: 1 };
+                this._ensureInstance(
+                  {
+                    sheet: ds.currentSheet,
+                    rowIndex: virt.rowIndex,
+                    copyIndex: virt.copyIndex,
+                    copies: virt.copies,
+                    itemIndex: index,
+                  },
+                  index,
+                  max,
+                );
+              }
+            } else {
+              const serialCount = App.dataSource.getCanvasState().maxSerialCount || 1;
+              for (let index = 0; index < Math.max(max, serialCount); index++) {
+                this._ensureInstance(
+                  {
+                    sheet: "",
+                    rowIndex: index,
+                    copyIndex: 0,
+                    copies: 1,
+                    itemIndex: index,
+                  },
+                  index,
+                  max,
+                );
+              }
+            }
+            return this.state.instances.filter((instance) => instance.source?.itemIndex < max);
+          },
+
+          instanceForPage: function (pageIndex) {
+            return this.state.instances.find((instance) => instance.source?.itemIndex === pageIndex);
+          },
+
+          instanceForLabel: function (rowIndex, copyIndex, physicalPage, physicalTotal) {
+            const ds = App.state.dataSource;
+            const sheet = ds.currentSheet || "";
+            const recordKey = this._recordKey(sheet, rowIndex, copyIndex);
+            let instance = this.state.instances.find((item) => item.recordKey === recordKey);
+            if (!instance) {
+              instance = {
+                id: this._newId(),
+                recordKey,
+                source: { sheet, rowIndex, copyIndex, copies: 1, itemIndex: -1 },
+                pageIndex: physicalPage || 0,
+                totalPages: physicalTotal || 1,
+                overrides: {
+                  props: {},
+                  content: {},
+                  binding: {},
+                  added: [],
+                  removedIds: [],
+                  order: [],
+                },
+              };
+              this.state.instances.push(instance);
+            }
+            instance.pageIndex = physicalPage || 0;
+            instance.totalPages = physicalTotal || 1;
+            return instance;
+          },
+
+          _deepMerge: function (target, source) {
+            if (!source || typeof source !== "object") return target;
+            if (Array.isArray(source)) return this._clone(source);
+            const out = target && typeof target === "object" && !Array.isArray(target) ? target : {};
+            Object.keys(source).forEach((key) => {
+              const value = source[key];
+              if (value && typeof value === "object" && !Array.isArray(value)) {
+                out[key] = this._deepMerge(out[key], value);
+              } else {
+                out[key] = this._clone(value);
+              }
+            });
+            return out;
+          },
+
+          _rawText: function (obj) {
+            if (obj.rawContent !== undefined && obj.rawContent !== null) return String(obj.rawContent);
+            let text = String(obj.text || "");
+            const prefix = obj.prefixRaw !== undefined ? obj.prefixRaw : obj.prefix || "";
+            const suffix = obj.suffixRaw !== undefined ? obj.suffixRaw : obj.suffix || "";
+            if (prefix && text.startsWith(prefix)) text = text.substring(prefix.length);
+            if (suffix && text.endsWith(suffix)) text = text.substring(0, text.length - suffix.length);
+            return text;
+          },
+
+          _resolveTopLevelText: function (obj, instance, contentOverride) {
+            let raw = this._rawText(obj);
+            const binding = obj.dataBinding;
+            const rowIndex = instance.source?.rowIndex || 0;
+            if (contentOverride && contentOverride.rawContent !== undefined) {
+              raw = String(contentOverride.rawContent);
+            } else if (obj.isDynamicPageNum && obj.pageConfig) {
+              raw = App.dataSource._formatPageNum(obj.pageConfig, {
+                page: instance.pageIndex || 0,
+                total: instance.totalPages || 1,
+                copy: instance.source?.copyIndex || 0,
+                copies: instance.source?.copies || 1,
+              });
+            } else if (obj.isSerialNumber && obj.serialConfig) {
+              raw = App.tools._formatSerialNumber(obj.serialConfig, rowIndex);
+            } else if (obj.isDynamicDate && obj.dateConfig) {
+              raw = Utils.formatDate(new Date(), null, obj.dateConfig);
+            } else if (binding && binding.type === "variable" && binding.field) {
+              raw = this._fieldValue(binding.sheet || instance.source?.sheet, rowIndex, binding.field);
+            }
+
+            const prefix =
+              contentOverride && contentOverride.prefixRaw !== undefined
+                ? String(contentOverride.prefixRaw)
+                : obj.prefixRaw !== undefined
+                  ? String(obj.prefixRaw)
+                  : String(obj.prefix || "");
+            const suffix =
+              contentOverride && contentOverride.suffixRaw !== undefined
+                ? String(contentOverride.suffixRaw)
+                : obj.suffixRaw !== undefined
+                  ? String(obj.suffixRaw)
+                  : String(obj.suffix || "");
+            return { raw, prefix, suffix };
+          },
+
+          _resolveTable: function (obj, instance, contentOverride) {
+            if (!obj.tableData || !Array.isArray(obj.tableData.cells)) return;
+            const rowIndex = instance.source?.rowIndex || 0;
+            const cellOverrides = contentOverride?.cells || {};
+            obj.tableData.cells.forEach((row, rowPos) => {
+              row.forEach((cell, colPos) => {
+                if (!cell) return;
+                const key = `${rowPos}:${colPos}`;
+                if (cellOverrides[key]?.text !== undefined) {
+                  cell.text = cellOverrides[key].text;
+                } else if (cell.dataBinding?.type === "variable" && cell.dataBinding.field) {
+                  cell.text = this._fieldValue(cell.dataBinding.sheet || instance.source?.sheet, rowIndex, cell.dataBinding.field);
+                }
+              });
+            });
+          },
+
+          _resolveSharedReferences: function (objects) {
+            const shared = new Map();
+            const rawById = new Map();
+            objects.forEach((obj) => {
+              if (obj.syncMode === "share" && obj.sharedId) shared.set(obj.sharedId, obj);
+              rawById.set(obj.id, this._rawText(obj));
+            });
+            const memo = new Map();
+            const visiting = new Set();
+            const interpolate = (text) =>
+              String(text || "").replace(/\{([^}]+)\}/g, (match, key) => (shared.has(key) ? compute(key) : match));
+            const compute = (id) => {
+              if (memo.has(id)) return memo.get(id);
+              if (visiting.has(id)) return "";
+              visiting.add(id);
+              const source = shared.get(id);
+              const value = source
+                ? interpolate(source.rawContent !== undefined ? source.rawContent : rawById.get(source.id) || "")
+                : "";
+              visiting.delete(id);
+              memo.set(id, value);
+              return value;
+            };
+
+            objects.forEach((obj) => {
+              let raw = this._rawText(obj);
+              if (obj.syncMode === "ref" && obj.refId) raw = compute(obj.refId);
+              raw = interpolate(raw);
+              const prefix = interpolate(obj.prefixRaw !== undefined ? obj.prefixRaw : obj.prefix || "");
+              const suffix = interpolate(obj.suffixRaw !== undefined ? obj.suffixRaw : obj.suffix || "");
+              obj.rawContent = raw;
+              obj.prefixRaw = prefix;
+              obj.suffixRaw = suffix;
+              obj.prefix = prefix;
+              obj.suffix = suffix;
+              if (["i-text", "textbox", "text"].includes(obj.type)) obj.text = prefix + raw + suffix;
+              if (obj.isBarcode && obj.barcodeConfig) obj.barcodeConfig.text = prefix + raw + suffix;
+              if (obj.tableData?.cells) {
+                obj.tableData.cells.forEach((row) =>
+                  row.forEach((cell) => {
+                    if (!cell) return;
+                    if (cell.syncMode === "ref" && cell.refId) cell.text = compute(cell.refId);
+                    else cell.text = interpolate(cell.text);
+                  }),
+                );
+              }
+            });
+          },
+
+          resolveInstance: function (instance) {
+            this.ensureTemplate();
+            const base = this._clone(this.state.templateData);
+            const overrides = instance.overrides || {};
+            const byId = new Map((base.objects || []).map((obj) => [obj.id, obj]));
+            const removed = new Set(overrides.removedIds || []);
+            let objects = (base.objects || []).filter((obj) => !removed.has(obj.id));
+            (overrides.added || []).forEach((obj) => {
+              if (!obj?.id || removed.has(obj.id)) return;
+              objects.push(this._clone(obj));
+            });
+            const order = overrides.order || [];
+            if (order.length) {
+              const ordered = [];
+              order.forEach((id) => {
+                const obj = objects.find((item) => item.id === id);
+                if (obj) ordered.push(obj);
+              });
+              objects.forEach((obj) => {
+                if (!ordered.includes(obj)) ordered.push(obj);
+              });
+              objects = ordered;
+            }
+
+            objects.forEach((obj) => {
+              if (overrides.props?.[obj.id]) this._deepMerge(obj, overrides.props[obj.id]);
+              if (overrides.binding?.[obj.id]) {
+                obj.dataBinding = this._deepMerge(obj.dataBinding || {}, overrides.binding[obj.id]);
+              }
+              const contentOverride = overrides.content?.[obj.id];
+              if (obj.isTable) {
+                this._resolveTable(obj, instance, contentOverride);
+              } else {
+                const resolved = this._resolveTopLevelText(obj, instance, contentOverride);
+                obj.rawContent = resolved.raw;
+                obj.prefixRaw = resolved.prefix;
+                obj.suffixRaw = resolved.suffix;
+                obj.prefix = resolved.prefix;
+                obj.suffix = resolved.suffix;
+                if (["i-text", "textbox", "text"].includes(obj.type)) {
+                  obj.text = resolved.prefix + resolved.raw + resolved.suffix;
+                }
+                if (obj.isBarcode && obj.barcodeConfig) {
+                  obj.barcodeConfig.text = resolved.prefix + resolved.raw + resolved.suffix;
+                }
+              }
+            });
+            this._resolveSharedReferences(objects);
+            base.objects = objects;
+            return base;
+          },
+
+          _copyObjectMeta: function (from, to) {
+            [
+              "id",
+              "dataBinding",
+              "rawContent",
+              "prefix",
+              "suffix",
+              "prefixRaw",
+              "suffixRaw",
+              "sharedId",
+              "refId",
+              "syncMode",
+              "batchInstanceId",
+              "templateObjectId",
+              "batchLabelOrigin",
+              "isSerialNumber",
+              "serialConfig",
+              "isDynamicDate",
+              "dateConfig",
+              "isDynamicPageNum",
+              "pageConfig",
+              "isBarcode",
+              "barcodeConfig",
+              "imgDirId",
+              "imgDirName",
+            ].forEach((key) => {
+              if (from[key] !== undefined) to[key] = from[key];
+            });
+          },
+
+          _replaceTable: function (target) {
+            const center = target.getCenterPoint();
+            const replacement = App.tableEditor.buildFabricTable(this._clone(target.tableData));
+            replacement.set({
+              left: center.x,
+              top: center.y,
+              angle: target.angle,
+              scaleX: target.scaleX,
+              scaleY: target.scaleY,
+              opacity: target.opacity,
+            });
+            this._copyObjectMeta(target, replacement);
+            const objects = App.canvas.getObjects();
+            const index = objects.indexOf(target);
+            App.canvas.remove(target);
+            App.canvas.insertAt(replacement, index >= 0 ? index : objects.length, false);
+            return replacement;
+          },
+
+          _hydrateCanvas: async function (instance) {
+            const tasks = [];
+            const objects = [...App.canvas.getObjects()];
+            for (let obj of objects) {
+	              const objectOverride = instance.overrides?.props?.[obj.id] || {};
+	              if (objectOverride.width !== undefined) obj.__batchManualWidth = true;
+	              if (objectOverride.height !== undefined) obj.__batchManualHeight = true;
+              if (obj.isTable && obj.tableData) {
+                obj = this._replaceTable(obj);
+              }
+              if (obj.isBarcode && obj.barcodeConfig && (obj.dataBinding?.type === "variable" || obj.isSerialNumber || obj.isDynamicDate || obj.isDynamicPageNum)) {
+                tasks.push(
+                  App.barcode
+                    .createOrUpdate(obj, obj.barcodeConfig)
+                    .then((replacement) => {
+                      this._copyObjectMeta(obj, replacement);
+                      const index = App.canvas.getObjects().indexOf(obj);
+                      App.canvas.remove(obj);
+                      App.canvas.insertAt(replacement, index >= 0 ? index : App.canvas.getObjects().length, false);
+                    })
+                    .catch((error) => console.warn("Batch barcode render failed", error)),
+                );
+              }
+              if (obj.type === "image" && obj.dataBinding?.type === "variable") {
+                const filename = this._fieldValue(
+                  obj.dataBinding.sheet || instance.source?.sheet,
+                  instance.source?.rowIndex || 0,
+                  obj.dataBinding.field,
+                );
+                tasks.push(App.dataSource._updateImageAsync(obj, filename));
+              }
+            }
+            await Promise.all(tasks);
+            App.canvas.renderAll();
+          },
+
+          _setBatchEditable: function () {
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") return;
+            App.canvas.getObjects().forEach((obj) => {
+              if (["i-text", "textbox", "text"].includes(obj.type)) obj.set("editable", true);
+            });
+          },
+
+          loadInstance: async function (instance) {
+            if (this._loading) return;
+            this._loading = true;
+            const wasLocked = App.history.locked;
+            App.history.locked = true;
+            try {
+              const resolved = this.resolveInstance(instance);
+              await new Promise((resolve) => {
+                App.canvas.loadFromJSON(resolved, () => resolve());
+              });
+              App.paper.drawGrid();
+              await this._hydrateCanvas(instance);
+              this._setBatchEditable();
+              instance._baseline = this._canvasJson();
+              this.state.activeInstanceId = instance.id;
+              this.state.activePageIndex = instance.pageIndex || 0;
+              App.state.currentDataIndex = this.state.activePageIndex;
+              App.history.switchTo(instance.id, JSON.stringify(instance._baseline));
+              App.ui.updateLayerList();
+              App.ui.updateInspector();
+              this.updateUI();
+            } finally {
+              App.history.locked = wasLocked;
+              this._loading = false;
+              App.canvas.requestRenderAll();
+            }
+          },
+
+          deactivate: async function () {
+            if (!this.state.templateData) return;
+            this.captureActive();
+            const template = this._clone(this.state.templateData);
+            const wasLocked = App.history.locked;
+            App.history.locked = true;
+            try {
+              await new Promise((resolve) => App.canvas.loadFromJSON(template, () => resolve()));
+              App.paper.drawGrid();
+              App.canvas.renderAll();
+            } finally {
+              App.history.locked = wasLocked;
+            }
+            this.state.activeInstanceId = "";
+          },
+
+          activatePage: async function (pageIndex, opts = {}) {
+            const totalPages = Math.max(1, opts.totalPages || App.dataSource.calculateTotalPages());
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") return false;
+            if (!this.shouldHandlePage(totalPages)) return false;
+            this.ensureTemplate();
+            this.reconcileInstances(totalPages);
+            const safeIndex = Math.max(0, Math.min(pageIndex || 0, totalPages - 1));
+            const instance = this.instanceForPage(safeIndex);
+            if (!instance) return false;
+            this.captureActive();
+            const restoreMatches = this._restoreInstanceId === instance.id;
+            const force = this._forceReload || opts.force || restoreMatches;
+            if (restoreMatches) this._restoreInstanceId = "";
+            this._forceReload = false;
+            this.state.activePageIndex = safeIndex;
+            App.state.currentDataIndex = safeIndex;
+            if (force || this.state.activeInstanceId !== instance.id) {
+              await this.loadInstance(instance);
+            } else {
+              this.updateUI();
+            }
+            App.dataSource.updateNavUI();
+            return true;
+          },
+
+          _expectedRaw: function (obj, instance) {
+            if (obj.dataBinding?.type === "variable" && obj.dataBinding.field) {
+              return this._fieldValue(obj.dataBinding.sheet || instance.source?.sheet, instance.source?.rowIndex || 0, obj.dataBinding.field);
+            }
+            if (obj.isDynamicPageNum && obj.pageConfig) {
+              return App.dataSource._formatPageNum(obj.pageConfig, {
+                page: instance.pageIndex || 0,
+                total: instance.totalPages || 1,
+                copy: instance.source?.copyIndex || 0,
+                copies: instance.source?.copies || 1,
+              });
+            }
+            if (obj.isSerialNumber && obj.serialConfig) {
+              return App.tools._formatSerialNumber(obj.serialConfig, instance.source?.rowIndex || 0);
+            }
+            if (obj.isDynamicDate && obj.dateConfig) return Utils.formatDate(new Date(), null, obj.dateConfig);
+            return null;
+          },
+
+          _captureDiff: function (current, baseline, instance) {
+            const overrides = {
+              props: {},
+              content: {},
+              binding: {},
+              added: [],
+              removedIds: [],
+              order: [],
+            };
+
+            const currentById = new Map((current.objects || []).map((obj) => [obj.id, obj]));
+            const baselineById = new Map((baseline.objects || []).map((obj) => [obj.id, obj]));
+            baselineById.forEach((obj, id) => {
+              if (!currentById.has(id)) {
+                const addedIndex = overrides.added.findIndex((item) => item.id === id);
+                if (addedIndex >= 0) overrides.added.splice(addedIndex, 1);
+                else if (!overrides.removedIds.includes(id)) overrides.removedIds.push(id);
+              }
+            });
+            currentById.forEach((obj, id) => {
+              if (!baselineById.has(id)) {
+                overrides.removedIds = overrides.removedIds.filter((item) => item !== id);
+                if (!overrides.added.some((item) => item.id === id)) overrides.added.push(this._clone(obj));
+              }
+            });
+
+            const skip = new Set([
+              "id",
+              "selectable",
+              "evented",
+              "editable",
+              "text",
+              "rawContent",
+              "prefix",
+              "suffix",
+              "prefixRaw",
+              "suffixRaw",
+              "dataBinding",
+              "batchInstanceId",
+              "templateObjectId",
+              "batchLabelOrigin",
+            ]);
+            currentById.forEach((currentObj, id) => {
+              const baselineObj = baselineById.get(id);
+              if (!baselineObj) return;
+              const propPatch = {};
+              const keys = new Set([...Object.keys(currentObj), ...Object.keys(baselineObj)]);
+              keys.forEach((key) => {
+                if (skip.has(key)) return;
+	                const isTextObject = ["i-text", "textbox", "text"].includes(currentObj.type);
+	                if (isTextObject && key === "width" && !currentObj.__batchManualWidth) return;
+	                if (isTextObject && key === "height" && !currentObj.__batchManualHeight) return;
+                if (!this._same(currentObj[key], baselineObj[key])) propPatch[key] = this._clone(currentObj[key]);
+              });
+              if (Object.keys(propPatch).length) {
+                overrides.props[id] = this._deepMerge(overrides.props[id] || {}, propPatch);
+              }
+
+              if (!this._same(currentObj.dataBinding, baselineObj.dataBinding)) {
+                overrides.binding[id] = this._clone(currentObj.dataBinding || null);
+              }
+
+              const content = overrides.content[id] || {};
+              ["prefixRaw", "suffixRaw"].forEach((key) => {
+                if (!this._same(currentObj[key], baselineObj[key])) content[key] = currentObj[key];
+              });
+              const currentRaw = currentObj.rawContent !== undefined ? currentObj.rawContent : this._rawText(currentObj);
+              const baselineRaw = baselineObj.rawContent !== undefined ? baselineObj.rawContent : this._rawText(baselineObj);
+              if (!this._same(currentRaw, baselineRaw)) {
+                const expected = this._expectedRaw(currentObj, instance);
+                if (expected === null || String(currentRaw) !== String(expected)) content.rawContent = currentRaw;
+                else delete content.rawContent;
+              }
+
+              if (currentObj.tableData?.cells && baselineObj.tableData?.cells) {
+                const cells = content.cells || {};
+                currentObj.tableData.cells.forEach((row, rowIndex) => {
+                  row.forEach((cell, colIndex) => {
+                    const baseCell = baselineObj.tableData.cells?.[rowIndex]?.[colIndex];
+                    if (!cell || !baseCell || cell.text === baseCell.text) return;
+                    const expected = cell.dataBinding?.type === "variable"
+                      ? this._fieldValue(cell.dataBinding.sheet || instance.source?.sheet, instance.source?.rowIndex || 0, cell.dataBinding.field)
+                      : null;
+                    if (expected === null || String(cell.text) !== String(expected)) {
+                      cells[`${rowIndex}:${colIndex}`] = { text: cell.text };
+                    }
+                  });
+                });
+                if (Object.keys(cells).length) content.cells = cells;
+              }
+              if (Object.keys(content).length) overrides.content[id] = content;
+            });
+
+            const baselineOrder = (baseline.objects || []).map((obj) => obj.id);
+            const currentOrder = (current.objects || []).map((obj) => obj.id);
+            if (!this._same(currentOrder, baselineOrder)) overrides.order = currentOrder;
+            return overrides;
+          },
+
+          _hasOverrides: function (instance) {
+            const overrides = instance?.overrides || {};
+            return !!(
+              Object.keys(overrides.props || {}).length ||
+              Object.keys(overrides.content || {}).length ||
+              Object.keys(overrides.binding || {}).length ||
+              (overrides.added || []).length ||
+              (overrides.removedIds || []).length ||
+              (overrides.order || []).length
+            );
+          },
+
+          captureActive: function () {
+            if (this._loading || App.history.locked) return;
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") return;
+            const instance = this.state.instances.find((item) => item.id === this.state.activeInstanceId);
+            if (!instance || !instance._baseline) return;
+            const current = this._canvasJson();
+            const defaultInstance = {
+              ...instance,
+              overrides: { props: {}, content: {}, binding: {}, added: [], removedIds: [], order: [] },
+            };
+            const defaultCanvas = this.resolveInstance(defaultInstance);
+            instance.overrides = this._captureDiff(current, defaultCanvas, instance);
+            instance._baseline = current;
+            this.updateUI();
+          },
+
+          captureLabelObject: function (obj) {
+	            if (this._rendering) return;
+            if (!obj || !obj.batchInstanceId) return;
+            const instance = this.state.instances.find((item) => item.id === obj.batchInstanceId);
+            if (!instance) return;
+            const templateId = obj.templateObjectId || obj.id;
+            const overrides = this._clone(instance.overrides || {});
+            overrides.props ||= {};
+            overrides.content ||= {};
+            overrides.binding ||= {};
+            overrides.added ||= [];
+            overrides.removedIds ||= [];
+            overrides.order ||= [];
+	            const defaultInstance = {
+	              ...instance,
+	              overrides: { props: {}, content: {}, binding: {}, added: [], removedIds: [], order: [] },
+	            };
+	            const defaultObj = this.resolveInstance(defaultInstance).objects.find((item) => item.id === templateId);
+	            if (!defaultObj) {
+	              const local = obj.toObject(CUSTOM_PROPS);
+	              local.left -= obj.batchLabelOrigin?.x || 0;
+	              local.top -= obj.batchLabelOrigin?.y || 0;
+	              const index = overrides.added.findIndex((item) => item.id === templateId);
+	              if (index >= 0) overrides.added[index] = local;
+	              else overrides.added.push(local);
+	              instance.overrides = overrides;
+	              this.state.activeInstanceId = instance.id;
+	              this.updateUI();
+	              App.draft.schedule();
+	              return;
+	            }
+
+	            const props = {};
+	            const editableProps = [
+              "left",
+              "top",
+              "scaleX",
+              "scaleY",
+              "angle",
+              "opacity",
+              "fill",
+              "stroke",
+              "strokeWidth",
+              "strokeDashArray",
+              "rx",
+              "ry",
+              "fontFamily",
+              "fontSize",
+              "fontWeight",
+              "fontStyle",
+              "textAlign",
+              "lineHeight",
+              "charSpacing",
+              "width",
+              "height",
+              "backgroundColor",
+              "textBackgroundColor",
+              "lockMovementX",
+              "lockMovementY",
+              "hasControls",
+              "tableData",
+              "barcodeConfig",
+	            ];
+	            editableProps.forEach((key) => {
+	              if (obj[key] === undefined || defaultObj[key] === undefined) return;
+	              const isTextObject = ["i-text", "textbox", "text"].includes(obj.type);
+	              if (isTextObject && key === "width" && !obj.__batchManualWidth) return;
+	              if (isTextObject && key === "height" && !obj.__batchManualHeight) return;
+	              let currentValue = this._clone(obj[key]);
+	              if (key === "left") currentValue -= obj.batchLabelOrigin?.x || 0;
+	              if (key === "top") currentValue -= obj.batchLabelOrigin?.y || 0;
+	              if (!this._same(currentValue, defaultObj[key])) props[key] = currentValue;
+	            });
+	            if (Object.keys(props).length) overrides.props[templateId] = props;
+	            else delete overrides.props[templateId];
+
+	            if (obj.dataBinding && !this._same(obj.dataBinding, defaultObj.dataBinding)) {
+	              overrides.binding[templateId] = this._clone(obj.dataBinding);
+	            } else {
+	              delete overrides.binding[templateId];
+	            }
+
+	            const content = {};
+	            const currentRaw = obj.rawContent !== undefined ? obj.rawContent : this._rawText(obj);
+	            const defaultRaw = defaultObj.rawContent !== undefined ? defaultObj.rawContent : this._rawText(defaultObj);
+	            if (!this._same(currentRaw, defaultRaw)) content.rawContent = currentRaw;
+	            const currentPrefix = obj.prefixRaw !== undefined ? obj.prefixRaw : obj.prefix || "";
+	            const defaultPrefix = defaultObj.prefixRaw !== undefined ? defaultObj.prefixRaw : defaultObj.prefix || "";
+	            if (!this._same(currentPrefix, defaultPrefix)) content.prefixRaw = currentPrefix;
+	            const currentSuffix = obj.suffixRaw !== undefined ? obj.suffixRaw : obj.suffix || "";
+	            const defaultSuffix = defaultObj.suffixRaw !== undefined ? defaultObj.suffixRaw : defaultObj.suffix || "";
+	            if (!this._same(currentSuffix, defaultSuffix)) content.suffixRaw = currentSuffix;
+	            if (obj.tableData?.cells && defaultObj.tableData?.cells) {
+	              const cells = {};
+	              obj.tableData.cells.forEach((row, rowIndex) => {
+	                row.forEach((cell, colIndex) => {
+	                  const defaultCell = defaultObj.tableData.cells[rowIndex]?.[colIndex];
+	                  if (cell && defaultCell && !this._same(cell.text, defaultCell.text)) {
+	                    cells[`${rowIndex}:${colIndex}`] = { text: cell.text };
+	                  }
+	                });
+	              });
+	              if (Object.keys(cells).length) content.cells = cells;
+	            }
+	            if (Object.keys(content).length) overrides.content[templateId] = content;
+	            else delete overrides.content[templateId];
+            instance.overrides = overrides;
+            this.state.activeInstanceId = instance.id;
+            this.updateUI();
+            App.draft.schedule();
+          },
+
+          captureLabelSelection: function () {
+            if (App.state.paperType !== "label" || App.state.label.mode !== "preview") return;
+            const obj = App.canvas.getActiveObject();
+            if (obj && !obj.type?.startsWith("activeSelection")) this.captureLabelObject(obj);
+          },
+
+	          ensureLabelHistory: function (instanceId) {
+	            if (!instanceId) return;
+	            if (!this._labelHistory[instanceId]) {
+	              const instance = this.state.instances.find((item) => item.id === instanceId);
+	              if (!instance) return;
+	              const snapshot = JSON.stringify(instance.overrides || {});
+	              this._labelHistory[instanceId] = { stack: [snapshot], index: 0 };
+	            }
+	            this.state.activeInstanceId = instanceId;
+	            App.history.updateUI();
+	          },
+
+	          recordLabelHistory: function (instanceId) {
+	            if (!instanceId) return;
+	            const instance = this.state.instances.find((item) => item.id === instanceId);
+	            if (!instance) return;
+	            this.ensureLabelHistory(instanceId);
+	            const history = this._labelHistory[instanceId];
+	            const snapshot = JSON.stringify(instance.overrides || {});
+	            if (history.stack[history.index] === snapshot) return;
+	            history.stack = history.stack.slice(0, history.index + 1);
+	            history.stack.push(snapshot);
+	            if (history.stack.length > 20) history.stack.shift();
+	            history.index = history.stack.length - 1;
+	            App.history.updateUI();
+	          },
+
+	          undoLabel: async function () {
+	            const id = this.state.activeInstanceId;
+	            const history = this._labelHistory[id];
+	            const instance = this.state.instances.find((item) => item.id === id);
+	            if (!history || !instance || history.index <= 0) return;
+	            history.index--;
+	            instance.overrides = this._clone(JSON.parse(history.stack[history.index]));
+	            await App.label.renderPreview();
+	            App.history.updateUI();
+	            App.draft.schedule();
+	          },
+
+	          redoLabel: async function () {
+	            const id = this.state.activeInstanceId;
+	            const history = this._labelHistory[id];
+	            const instance = this.state.instances.find((item) => item.id === id);
+	            if (!history || !instance || history.index >= history.stack.length - 1) return;
+	            history.index++;
+	            instance.overrides = this._clone(JSON.parse(history.stack[history.index]));
+	            await App.label.renderPreview();
+	            App.history.updateUI();
+	            App.draft.schedule();
+	          },
+
+	          captureLabelInstance: function (instanceId) {
+	            if (!instanceId || App.state.label.mode !== "preview") return;
+	            App.canvas
+	              .getObjects()
+	              .filter((obj) => obj.batchInstanceId === instanceId && !obj.isGrid)
+	              .forEach((obj) => this.captureLabelObject(obj));
+	          },
+
+	          assignAddedLabelObject: function (obj) {
+	            if (this._rendering || !obj || App.state.paperType !== "label" || App.state.label.mode !== "preview") return;
+	            if (obj.batchInstanceId || obj.isGrid) return;
+	            const cfg = App.paper.getSettings();
+	            const labelW = Utils.mm2px(cfg.labelWidth);
+	            const labelH = Utils.mm2px(cfg.labelHeight);
+	            const gapH = Utils.mm2px(cfg.labelGapH);
+	            const gapV = Utils.mm2px(cfg.labelGapV);
+	            const point = obj.getCenterPoint();
+	            for (let row = 0; row < cfg.labelRows; row++) {
+	              for (let col = 0; col < cfg.labelCols; col++) {
+	                const x = cfg.marginLeft + col * (labelW + gapH);
+	                const y = cfg.marginTop + row * (labelH + gapV);
+	                if (point.x < x || point.x > x + labelW || point.y < y || point.y > y + labelH) continue;
+	                const globalIndex = (App.state.label.previewPage || 0) * Math.max(1, cfg.labelCols * cfg.labelRows) + row * cfg.labelCols + col;
+	                let dataIndex = globalIndex;
+	                let copyIndex = globalIndex % Math.max(1, cfg.labelQuantity);
+	                if (App.dataSource._virtualEnabled()) {
+	                  const virt = App.dataSource._resolveVirtual(globalIndex);
+	                  dataIndex = virt.rowIndex;
+	                  copyIndex = virt.copyIndex;
+	                } else if (App.state.dataSource.isActive && App.state.dataSource.data.length) {
+	                  dataIndex = Math.floor(globalIndex / Math.max(1, cfg.labelQuantity));
+	                }
+	                const instance = this.instanceForLabel(dataIndex, copyIndex, App.state.label.previewPage || 0, App.dataSource.calculateTotalPages());
+	                obj.batchInstanceId = instance.id;
+	                obj.templateObjectId = obj.id || this._newId();
+	                obj.id = obj.templateObjectId;
+	                obj.batchLabelOrigin = { x, y };
+	                const local = obj.toObject(CUSTOM_PROPS);
+	                local.left -= x;
+	                local.top -= y;
+	                instance.overrides ||= {};
+	                instance.overrides.added ||= [];
+	                instance.overrides.removedIds = (instance.overrides.removedIds || []).filter((id) => id !== obj.id);
+	                if (!instance.overrides.added.some((item) => item.id === obj.id)) instance.overrides.added.push(local);
+	                this.state.activeInstanceId = instance.id;
+	                App.draft.schedule();
+	                return;
+	              }
+	            }
+	          },
+
+          markLabelRemoval: function (obj) {
+	            if (this._rendering) return;
+            if (!obj?.batchInstanceId) return;
+            const instance = this.state.instances.find((item) => item.id === obj.batchInstanceId);
+            if (!instance) return;
+            instance.overrides ||= {};
+            instance.overrides.removedIds ||= [];
+            const id = obj.templateObjectId || obj.id;
+	            const addedIndex = (instance.overrides.added || []).findIndex((item) => item.id === id);
+	            if (addedIndex >= 0) instance.overrides.added.splice(addedIndex, 1);
+	            else if (id && !instance.overrides.removedIds.includes(id)) instance.overrides.removedIds.push(id);
+            App.draft.schedule();
+          },
+
+          clearCurrentOverrides: async function () {
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              const id = App.canvas.getActiveObject()?.batchInstanceId || this.state.activeInstanceId;
+              const instance = this.state.instances.find((item) => item.id === id);
+              if (!instance) return Utils.toast("请先选中一个标签", "info");
+              instance.overrides = { props: {}, content: {}, binding: {}, added: [], removedIds: [], order: [] };
+	              this.recordLabelHistory(instance.id);
+              App.label.renderPreview();
+              App.draft.schedule();
+              return;
+            }
+            const instance = this.state.instances.find((item) => item.id === this.state.activeInstanceId);
+            if (!instance) return;
+            instance.overrides = { props: {}, content: {}, binding: {}, added: [], removedIds: [], order: [] };
+            instance._baseline = null;
+            this._forceReload = true;
+            await App.dataSource.renderPage(this.state.activePageIndex || 0);
+            Utils.toast("已清除当前页面个性化设置");
+          },
+
+          clearSelectedContentOverride: async function () {
+            const obj = App.canvas.getActiveObject();
+            if (!obj) return;
+            const instanceId = obj.batchInstanceId || this.state.activeInstanceId;
+            const instance = this.state.instances.find((item) => item.id === instanceId);
+            const objectId = obj.templateObjectId || obj.id;
+            if (!instance || !objectId) return;
+            if (instance.overrides?.content?.[objectId]) delete instance.overrides.content[objectId];
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              await App.label.renderPreview();
+            } else {
+              instance._baseline = null;
+              this._forceReload = true;
+              await App.dataSource.renderPage(this.state.activePageIndex || 0);
+            }
+            App.draft.schedule();
+          },
+
+          applyToTemplate: async function () {
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              return Utils.toast("请先切换到设计模式修改模板", "info");
+            }
+            if (!this.state.activeInstanceId) return;
+            this.captureActive();
+            const current = this._canvasJson();
+            this.state.templateData = current;
+            this.state.templateRevision = (this.state.templateRevision || 1) + 1;
+            const instance = this.state.instances.find((item) => item.id === this.state.activeInstanceId);
+            if (instance) instance._baseline = null;
+            this._forceReload = true;
+            await App.dataSource.renderPage(this.state.activePageIndex || 0);
+            App.state.hasUnsavedChanges = true;
+            App.draft.schedule();
+            Utils.toast("当前页修改已应用到模板");
+          },
+
+          updateUI: function () {
+            const instance = this.state.instances.find((item) => item.id === this.state.activeInstanceId);
+            const active = !!instance;
+            const customized = this._hasOverrides(instance);
+            const badge = document.getElementById("vdpOverrideBadge");
+            const resetBtn = document.getElementById("vdpResetPageBtn");
+            const applyBtn = document.getElementById("vdpApplyTemplateBtn");
+            const selectedReset = document.getElementById("batchResetContentBtn");
+            if (badge) badge.classList.toggle("hidden", !customized);
+            if (resetBtn) resetBtn.classList.toggle("hidden", !customized);
+            if (applyBtn) applyBtn.classList.toggle("hidden", !active);
+            if (selectedReset) {
+              const obj = App.canvas?.getActiveObject();
+              const id = obj?.templateObjectId || obj?.id;
+              const hasContent = !!(instance?.overrides?.content?.[id] || obj?.batchInstanceId);
+              selectedReset.classList.toggle("hidden", !active || !hasContent);
+            }
           },
         },
 
@@ -2467,6 +3649,7 @@
             }
 
             try {
+	              App.batch.captureActive();
               App.canvas.renderOnAddRemove = false;
               let file;
               try {
@@ -2542,7 +3725,8 @@
                 setTimeout(() => App.ui.updateInspector(), 0);
               }
 
-              await this.renderPage(0);
+	              App.batch.invalidate();
+	              await this.renderPage(App.batch._restoreInstanceId ? App.state.batch.activePageIndex || 0 : 0);
               this.updateNavUI();
             } catch (e) {
               console.error(e);
@@ -2588,6 +3772,8 @@
 
           changeSheet: function (sheetName) {
             const s = App.state.dataSource;
+	            App.batch.captureActive();
+	            App.batch.invalidate();
             s.currentSheet = sheetName;
             s.copyField = "";
             this._invalidateVirtual();
@@ -2608,6 +3794,7 @@
               }
             }
 
+	            App.batch.invalidate();
             this.updateUI();
             this.updateNavUI();
             App.draft.schedule();
@@ -2737,6 +3924,14 @@
             if (this._virtualEnabled()) {
               return this._virtualTotal();
             }
+	            if (App.batch.state.templateData && !(App.state.paperType === "label" && App.state.label.mode === "design")) {
+	              if (s.isActive && s.data.length > 0) return s.data.length;
+	              const templateSerialCount = (App.batch.state.templateData.objects || []).reduce(
+	                (max, obj) => Math.max(max, obj.isSerialNumber ? obj.serialConfig?.generateCount || 1 : 1),
+	                1,
+	              );
+	              if (templateSerialCount > 1) return templateSerialCount;
+	            }
 
             if (s.isActive && canvasState.hasBinding && s.workbook) {
               const objs = App.canvas.getObjects();
@@ -2777,6 +3972,10 @@
           },
 
           close: async function (opts = {}) {
+	            if (!opts.preserveBatch) {
+	              await App.batch.deactivate();
+	              App.batch.reset();
+	            }
             const copyField = opts.preserveCopyField ? App.state.dataSource.copyField || "" : "";
             App.state.dataSource = {
               fileHandle: null,
@@ -2789,10 +3988,11 @@
               headers: [],
               isActive: false,
               copyField,
+	              identityField: opts.preserveBatch ? App.batch.state.identity.field || "" : "",
             };
             this._invalidateVirtual();
             this.updateUI();
-            this.renderPage(0);
+	            if (!opts.preserveBatch) this.renderPage(0);
             this.updateNavUI();
           },
 
@@ -2841,6 +4041,25 @@
               s.copyField = copySel.value;
             }
 
+	            const identitySel = document.getElementById("dsIdentityField");
+	            if (identitySel) {
+	              const prevIdentity = s.identityField || App.batch.state.identity.field || "";
+	              identitySel.innerHTML = "";
+	              const emptyIdentity = document.createElement("option");
+	              emptyIdentity.value = "";
+	              emptyIdentity.innerText = "不启用（按行位置匹配）";
+	              identitySel.appendChild(emptyIdentity);
+	              s.headers.forEach((h) => {
+	                if (!h) return;
+	                const opt = document.createElement("option");
+	                opt.value = h;
+	                opt.innerText = h;
+	                identitySel.appendChild(opt);
+	              });
+	              identitySel.value = s.headers.indexOf(prevIdentity) >= 0 ? prevIdentity : "";
+	              s.identityField = identitySel.value;
+	            }
+
             let copiesText = "";
             if (s.copyField && s.data.length > 0) {
               const total = this._rebuildVirtualMap().length;
@@ -2871,6 +4090,8 @@
           },
           setCopyField: function (value) {
             const s = App.state.dataSource;
+	            App.batch.captureActive();
+	            App.batch.invalidate();
             s.copyField = value || "";
             this._invalidateVirtual();
             App.state.currentDataIndex = 0;
@@ -2888,6 +4109,24 @@
             if (notices.length > 0) Utils.toast(notices.join("；"), "info");
             App.draft.schedule();
           },
+
+	          setIdentityField: function (value) {
+	            const s = App.state.dataSource;
+	            App.batch.captureActive();
+	            s.identityField = value || "";
+	            App.batch.state.identity = { sheet: s.currentSheet || "", field: s.identityField };
+	            App.batch.migrateRecordKeys();
+	            App.batch.invalidate();
+	            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+	              App.label.renderPreview();
+	            } else {
+	              this.renderPage(App.state.currentDataIndex || 0);
+	            }
+	            if (App.batch._identityFallback && s.identityField) {
+	              Utils.toast("所选字段存在空值或重复值，当前按行位置匹配", "info");
+	            }
+	            App.draft.schedule();
+	          },
 
           batchUpdateBinding: function () {
             const s = App.state.dataSource;
@@ -2919,6 +4158,8 @@
                 }
               });
               if (count > 0) {
+	                App.batch.state.templateData = App.batch._clone(designJSON);
+	                App.batch.state.templateRevision = Math.max(1, (App.batch.state.templateRevision || 0) + 1);
                 App.label.renderPreview();
                 Utils.toast(`已更新${count}个字段`);
               } else {
@@ -2948,6 +4189,7 @@
               if (updated) count++;
             });
             if (count > 0) {
+	              App.batch.invalidate();
               this.refreshBindingState();
               App.ui.updateInspector();
               App.history.saveState();
@@ -2963,6 +4205,10 @@
             const max = this.calculateTotalPages();
             pageIndex = Math.max(0, Math.min(pageIndex, max - 1));
             if (max === 0) pageIndex = 0;
+	            if (await App.batch.activatePage(pageIndex, { totalPages: max })) {
+	              this.updateNavUI();
+	              return;
+	            }
             App.state.currentDataIndex = pageIndex;
             // 虚拟页展开：同一数据行的 N 份共用行数据，仅份数序号不同
             const virt = this._virtualEnabled() ? this._resolveVirtual(pageIndex) : { rowIndex: pageIndex, copyIndex: 0, copies: 1 };
@@ -3252,6 +4498,7 @@
             } else {
               navBar.classList.add("hidden");
             }
+	            App.batch.updateUI();
           },
 
           refreshBindingState: function () {
@@ -3285,7 +4532,7 @@
 
           syncFromProject: async function (meta) {
             if (!meta || !meta.fileHandleId) {
-              this.close({ preserveCopyField: true });
+	              this.close({ preserveCopyField: true, preserveBatch: true });
               return;
             }
             const { fileHandleId, fileName, currentSheet } = meta;
@@ -3296,11 +4543,11 @@
                 await this.loadFromHandle(handle, fileHandleId);
               } else {
                 Utils.toast(`无法找到关联文件: ${fileName}`, "error");
-                this.close({ preserveCopyField: true });
+	              this.close({ preserveCopyField: true, preserveBatch: true });
               }
             } catch (e) {
               console.error("DB Error", e);
-              this.close({ preserveCopyField: true });
+	            this.close({ preserveCopyField: true, preserveBatch: true });
             }
           },
           selectImageDir: async function () {
@@ -4739,7 +5986,16 @@
 
                   const isLocked = o.lockMovementX;
                   const isDynamic = o.isDynamicDate || o.isDynamicPageNum || o.isSerialNumber || (o.dataBinding && o.dataBinding.type === "variable");
-                  o.set("editable", !isLocked && !isDynamic);
+	                  const canEditVariable = !!(o.batchInstanceId || App.batch.state.activeInstanceId);
+	                  o.set("editable", !isLocked && (!isDynamic || canEditVariable));
+	                  if (
+	                    App.state.paperType === "label" &&
+	                    App.state.label.mode === "preview" &&
+	                    o.batchInstanceId
+	                  ) {
+	                    App.batch.state.activeInstanceId = o.batchInstanceId;
+	                    App.batch.ensureLabelHistory(o.batchInstanceId);
+	                  }
                 });
               }
               if (deselected)
@@ -4748,6 +6004,7 @@
                   if (idx > -1) App.state.selectionQueue.splice(idx, 1);
                 });
               App.ui.updateInspector();
+	              App.batch.updateUI();
             };
             const handleLiveTransform = (e) => {
               const t = e.target;
@@ -4815,6 +6072,8 @@
               if (t.type === "textbox") {
                 const finalW = Math.round(t.width * t.scaleX);
                 const finalH = Math.round(t.height * t.scaleY);
+	                t.__batchManualWidth = true;
+	                t.__batchManualHeight = true;
                 if (t.isParagraph) {
                   const width = Math.max(finalW, 50);
                   if (t.paragraphSizeMode === "auto") {
@@ -6005,7 +7264,8 @@
               obj.hoverCursor = state ? "not-allowed" : "move";
               if (["i-text", "textbox", "text"].includes(obj.type)) {
                 const isDynamic = obj.isDynamicDate || obj.isDynamicPageNum || obj.isSerialNumber || (obj.dataBinding && obj.dataBinding.type === "variable");
-                obj.set("editable", !state && !isDynamic);
+                const canEditVariable = !!(obj.batchInstanceId || App.batch.state.activeInstanceId);
+                obj.set("editable", !state && (!isDynamic || canEditVariable));
               }
             };
             if (act.type === "activeSelection") {
@@ -6877,6 +8137,10 @@
               opacity: target.opacity,
             };
             const newGroup = this.buildFabricTable(data);
+	            newGroup.id = target.id || newGroup.id || App.batch._newId();
+	            newGroup.batchInstanceId = target.batchInstanceId;
+	            newGroup.templateObjectId = target.templateObjectId;
+	            newGroup.batchLabelOrigin = target.batchLabelOrigin;
             newGroup.set({
               left: center.x,
               top: center.y,
@@ -7198,7 +8462,7 @@
                 sheet: ds.currentSheet || (ds.sheetNames.length ? ds.sheetNames[0] : ""),
                 field: ds.headers.length ? ds.headers[0] : "",
               };
-              if (!act.isBarcode && act.type !== "image") act.set("editable", false);
+              if (!act.isBarcode && act.type !== "image" && !App.batch.state.activeInstanceId) act.set("editable", false);
               if (ds.isActive && ds.data.length > 0 && act.dataBinding.field) {
                 const row = ds.data[App.dataSource._currentVirtual().rowIndex];
                 newValue = row ? String(row[act.dataBinding.field] || "") : "";
@@ -7218,7 +8482,7 @@
                   totalSeparator: "/",
                 };
               }
-              if (!act.isBarcode) act.set("editable", false);
+              if (!act.isBarcode && !App.batch.state.activeInstanceId) act.set("editable", false);
               newValue = App.tools._formatSerialNumber(act.serialConfig, App.dataSource._currentVirtual().rowIndex);
             } else if (type === "date") {
               act.isDynamicDate = true;
@@ -7232,7 +8496,7 @@
                   offsetMinutes: 0,
                 };
               }
-              if (!act.isBarcode) act.set("editable", false);
+              if (!act.isBarcode && !App.batch.state.activeInstanceId) act.set("editable", false);
               newValue = Utils.formatDate(new Date(), null, act.dateConfig);
             }
 
@@ -7266,6 +8530,7 @@
                     cy = parseFloat(document.getElementById("propY").value);
                   act.setPositionByOrigin(new fabric.Point(Utils.mm2px(key === "left" ? numVal : cx), Utils.mm2px(key === "top" ? numVal : cy)), "left", "top");
                 } else if (key === "width") {
+	                  if (act.type === "textbox") act.__batchManualWidth = true;
                   if (act.isParagraph) {
                     if (act.paragraphSizeMode !== "auto") act.fixedWidth = pxVal;
                     act.set("width", pxVal);
@@ -7274,6 +8539,7 @@
                     act.type === "textbox" ? act.set("width", pxVal) : act.set("scaleX", pxVal / act.width);
                   }
                 } else if (key === "height") {
+	                  if (act.type === "textbox") act.__batchManualHeight = true;
                   if (act.isParagraph && act.paragraphSizeMode !== "auto") {
                     act.fixedHeight = pxVal;
                     act.set("height", pxVal);
@@ -8754,6 +10020,10 @@
             const idx = canvas.getObjects().indexOf(oldObj);
             if (idx === -1) return;
             const wasActive = canvas.getActiveObject() === oldObj;
+	            newObj.id = oldObj.id || newObj.id || App.batch._newId();
+	            newObj.batchInstanceId = oldObj.batchInstanceId;
+	            newObj.templateObjectId = oldObj.templateObjectId;
+	            newObj.batchLabelOrigin = oldObj.batchLabelOrigin;
             newObj.dataBinding = oldObj.dataBinding;
             newObj.rawContent = oldObj.rawContent;
             newObj.isSerialNumber = oldObj.isSerialNumber;
@@ -9904,7 +11174,9 @@
             return new Promise((resolve) => {
             App.draft.suspend();
             try {
+	              App.batch.reset();
               App.state.dataSource.copyField = data.settings?.copyField || "";
+	              App.state.dataSource.identityField = data.dataSource?.identityField || data.batch?.identity?.field || "";
               if (data.settings) {
                 const s = data.settings;
                 const setV = (id, v) => document.getElementById(id) && (document.getElementById(id).value = v);
@@ -9982,7 +11254,9 @@
                 if (data.paperSize) setV("paperSize", data.paperSize);
               }
 
-              App.dataSource.syncFromProject(data.dataSource);
+	              App.batch.loadState(data.batch);
+	              App.state.currentDataIndex = data.batch?.activePageIndex || 0;
+	              App.dataSource.syncFromProject(data.dataSource);
               if (data.dataSource && data.dataSource.imgDirId) {
                 App.dataSource.restoreImageDir(data.dataSource.imgDirId);
               }
@@ -10132,12 +11406,12 @@
           },
         },
         
-        content: {
-          parseVariables: function (text) {
+	        content: {
+	          parseVariables: function (text, contextObj = null) {
             if (!text) return "";
             const str = String(text);
             return str.replace(/\{([^}]+)\}/g, (match, key) => {
-              const source = this.findObjectBySharedId(key);
+	              const source = this.findObjectBySharedId(key, contextObj);
               if (source) {
                 return this.compute(source, true);
               }
@@ -10150,25 +11424,31 @@
             obj._isComputing = true;
             let raw = "";
             if (obj.syncMode === "ref" && obj.refId) {
-              const parent = this.findObjectBySharedId(obj.refId);
+	              const parent = this.findObjectBySharedId(obj.refId, obj);
               raw = parent ? this.compute(parent, true) : "{引用丢失}";
             } else {
               raw = String(obj.rawContent !== undefined ? obj.rawContent : obj.text || "");
             }
 
-            let parsedRaw = this.parseVariables(raw);
+	            let parsedRaw = this.parseVariables(raw, obj);
             let myPre = obj.prefixRaw !== undefined ? obj.prefixRaw : obj.prefix || "";
             let mySuf = obj.suffixRaw !== undefined ? obj.suffixRaw : obj.suffix || "";
-            myPre = this.parseVariables(myPre);
-            mySuf = this.parseVariables(mySuf);
+	            myPre = this.parseVariables(myPre, obj);
+	            mySuf = this.parseVariables(mySuf, obj);
             obj._isComputing = false;
             return myPre + parsedRaw + mySuf;
           },
 
-          findObjectBySharedId: function (id) {
+	          findObjectBySharedId: function (id, contextObj = null) {
             if (!id) return null;
             const objs = App.canvas.getObjects();
-            return objs.find((o) => o.sharedId === id && o.syncMode === "share");
+	            const instanceId = contextObj?.batchInstanceId || "";
+	            return objs.find(
+	              (o) =>
+	                o.sharedId === id &&
+	                o.syncMode === "share" &&
+	                (!instanceId || !o.batchInstanceId || o.batchInstanceId === instanceId),
+	            );
           },
 
           render: async function (obj) {
@@ -10201,8 +11481,11 @@
 
           updateDependents: function (sharedId) {
             const objs = App.canvas.getObjects();
+	            const source = objs.find((o) => o.sharedId === sharedId && o.syncMode === "share");
+	            const instanceId = source?.batchInstanceId || "";
             const variablePattern = new RegExp(`\\{${sharedId}\\}`);
             objs.forEach((o) => {
+	              if (instanceId && o.batchInstanceId !== instanceId) return;
               if (o.syncMode === "ref" && o.refId === sharedId) {
                 this.render(o);
                 return;
@@ -10220,7 +11503,7 @@
           setRawContent: function (obj, val) {
             if (!obj) return;
             if (obj.syncMode === "ref" && obj.refId) {
-              const parent = this.findObjectBySharedId(obj.refId);
+	              const parent = this.findObjectBySharedId(obj.refId, obj);
               if (parent) {
                 this.setRawContent(parent, val);
                 return;
@@ -10290,6 +11573,10 @@
           enterPreview: function () {
             const json = App.canvas.toJSON(CUSTOM_PROPS);
             json.objects = json.objects.filter((o) => !o.isGrid);
+	            App.batch._assignObjectIds(json.objects);
+	            if (!App.batch.state.templateId) App.batch.state.templateId = App.batch._newId();
+	            App.batch.state.templateData = App.batch._clone(json);
+	            App.batch.state.templateRevision = Math.max(1, (App.batch.state.templateRevision || 0) + 1);
             App.state.label.designContent = json;
             App.state.label.mode = "preview";
             const isSingleMode = document.getElementById("fitLabelSize")?.checked;
@@ -10333,9 +11620,17 @@
               App.ui.updateLayerList();
             }
           },
-          renderPreview: async function () {
+	          renderPreview: function () {
+	            if (this._renderPromise) return this._renderPromise;
+	            this._renderPromise = this._renderPreviewNow();
+	            return this._renderPromise.finally(() => {
+	              this._renderPromise = null;
+	            });
+	          },
+	          _renderPreviewNow: async function () {
             const wasHistoryLocked = App.history.locked;
             App.history.locked = true;
+	            App.batch._rendering = true;
             App.canvas.renderOnAddRemove = false;
             try {
               App.canvas.clear();
@@ -10425,12 +11720,15 @@
               App.canvas.renderOnAddRemove = true;
               App.canvas.requestRenderAll();
               App.history.locked = wasHistoryLocked;
+	              App.batch._rendering = false;
             }
           },
 
           _cloneDesignTo: function (json, x, y, dataIndex, currentPage, totalPages, copyInfo) {
             const copy = copyInfo || { copyIndex: 0, copies: 1 };
             return new Promise(async (resolve) => {
+	              const instance = App.batch.instanceForLabel(dataIndex, copy.copyIndex, currentPage, totalPages);
+	              const sourceJson = instance ? App.batch.resolveInstance(instance) : json;
               if (json.backgroundImage) {
                 await new Promise((r) => {
                   fabric.Image.fromObject(json.backgroundImage, (img) => {
@@ -10451,8 +11749,14 @@
                 });
               }
 
-              fabric.util.enlivenObjects(json.objects, async (objs) => {
+	              fabric.util.enlivenObjects(sourceJson.objects, async (objs) => {
                 const processing = objs.map(async (o) => {
+	                  const templateObjectId = o.id;
+	                  if (instance) {
+	                    o.batchInstanceId = instance.id;
+	                    o.templateObjectId = templateObjectId;
+	                    o.batchLabelOrigin = { x, y };
+	                  }
                   o.set({
                     left: o.left + x,
                     top: o.top + y,
@@ -10461,7 +11765,7 @@
                   const hasData = ds.isActive && ds.data[dataIndex];
                   const prefix = o.prefix || "";
                   const suffix = o.suffix || "";
-                  if (o.isDynamicPageNum && o.pageConfig) {
+	                  if (!instance && o.isDynamicPageNum && o.pageConfig) {
                     const pageText = App.dataSource._formatPageNum(o.pageConfig, {
                       page: currentPage,
                       total: totalPages || 1,
@@ -10472,7 +11776,7 @@
                     o.set("text", prefix + pageText + suffix);
                   }
 
-                  if (o.isSerialNumber && o.serialConfig) {
+	                  if (!instance && o.isSerialNumber && o.serialConfig) {
                     const serialText = App.tools._formatSerialNumber(o.serialConfig, dataIndex);
                     o.rawContent = serialText;
                     if (!o.isBarcode) {
@@ -10480,7 +11784,7 @@
                     }
                   }
 
-                  if (o.dataBinding && o.dataBinding.type === "variable" && hasData) {
+	                  if (!instance && o.dataBinding && o.dataBinding.type === "variable" && hasData) {
                     const val = ds.data[dataIndex][o.dataBinding.field];
                     if (val !== undefined && val !== null) {
                       const valStr = String(val);
@@ -10491,7 +11795,7 @@
                     }
                   }
 
-                  if (o.isBarcode && o.dataBinding && o.dataBinding.type === "variable" && hasData) {
+	                  if (!instance && o.isBarcode && o.dataBinding && o.dataBinding.type === "variable" && hasData) {
                     const val = ds.data[dataIndex][o.dataBinding.field];
                     if (val !== undefined && val !== null) {
                       try {
@@ -10507,7 +11811,7 @@
                     }
                   }
 
-                  if (o.isTable && o.tableData && hasData) {
+	                  if (!instance && o.isTable && o.tableData && hasData) {
                     let tableChanged = false;
                     o.tableData.cells.forEach((row) => {
                       row.forEach((cell) => {
@@ -10531,15 +11835,53 @@
                     }
                   }
 
-                  o.set({
-                    selectable: false,
-                    evented: false,
-                    lockMovementX: true,
-                    lockMovementY: true,
-                    lockRotation: true,
-                    lockScalingX: true,
-                    lockScalingY: true,
-                  });
+	                  if (o.isBarcode && o.barcodeConfig && instance) {
+	                    try {
+	                      const replacement = await App.barcode.createOrUpdate(o, o.barcodeConfig);
+	                      App.batch._copyObjectMeta(o, replacement);
+	                      o = replacement;
+	                    } catch (error) {
+	                      console.warn("Label barcode render failed", error);
+	                    }
+	                  }
+
+	                  if (o.isTable && o.tableData && instance) {
+	                    const center = o.getCenterPoint();
+	                    const replacement = App.tableEditor.buildFabricTable(o.tableData);
+	                    replacement.set({
+	                      left: center.x,
+	                      top: center.y,
+	                      angle: o.angle,
+	                      scaleX: o.scaleX,
+	                      scaleY: o.scaleY,
+	                      opacity: o.opacity,
+	                    });
+	                    App.batch._copyObjectMeta(o, replacement);
+	                    o = replacement;
+	                  }
+
+	                  if (instance) {
+	                    o.set({
+	                      selectable: true,
+	                      evented: true,
+	                      lockMovementX: false,
+	                      lockMovementY: false,
+	                      lockRotation: false,
+	                      lockScalingX: false,
+	                      lockScalingY: false,
+	                    });
+	                    if (["i-text", "textbox", "text"].includes(o.type)) o.set("editable", true);
+	                  } else {
+	                    o.set({
+	                      selectable: false,
+	                      evented: false,
+	                      lockMovementX: true,
+	                      lockMovementY: true,
+	                      lockRotation: true,
+	                      lockScalingX: true,
+	                      lockScalingY: true,
+	                    });
+	                  }
                   App.canvas.add(o);
                 });
                 await Promise.all(processing);
