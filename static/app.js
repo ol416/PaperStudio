@@ -7278,15 +7278,6 @@
             const canDistribute = count >= 3;
             document.querySelectorAll(".dist-btn").forEach((btn) => (btn.disabled = !canDistribute));
             const isParagraph = count === 1 && type === "textbox";
-            document.getElementById("paragraphAlignTools")?.classList.toggle("hidden", !isParagraph);
-            document.getElementById("paragraphAlignDivider")?.classList.toggle("hidden", !isParagraph);
-            document.querySelectorAll(".paragraph-align-btn").forEach((btn) => {
-              btn.disabled = !isParagraph;
-              const isActive = isParagraph && act.textAlign === btn.dataset.paragraphAlign;
-              btn.classList.toggle("bg-red-50", isActive);
-              btn.classList.toggle("text-red-600", isActive);
-              btn.setAttribute("aria-pressed", String(!!isActive));
-            });
             const btnGroup = document.getElementById("btnGroup");
             const btnUngroup = document.getElementById("btnUngroup");
             if (btnGroup) {
