@@ -886,7 +886,7 @@
                 }
               });
             }
-            setTimeout(() => App.dataSource && App.dataSource.refreshBindingState(), 100);
+            App.dataSource?.scheduleBindingRefresh();
           });
           if (document.fonts && typeof document.fonts.addEventListener === "function") {
             // 字体（内置或本地）稍后加载完成时，刷新画布避免字形/度量回退
@@ -2610,14 +2610,16 @@
           },
 
           // 打开/保存工程后调用：同名去重并置顶，超出上限删除最旧
-          add: async function (name, data) {
+          add: async function (name, data, knownSize = 0) {
             if (!name || !data || (!data.settings && !data.canvasData)) return;
             const label = String(name).replace(/\.paper$/i, "") + ".paper";
-            let size = 0;
-            try {
-              size = new TextEncoder().encode(JSON.stringify(data)).length;
-            } catch (e) {
-              return;
+            let size = Number(knownSize) || 0;
+            if (!size) {
+              try {
+                size = new TextEncoder().encode(JSON.stringify(data)).length;
+              } catch (e) {
+                return;
+              }
             }
             if (size > this.maxBytes) {
               Utils.toast("项目较大，未加入最近打开", "info");
@@ -3512,6 +3514,21 @@
         },
 
         dataSource: {
+          _bindingRefreshTimer: null,
+
+          scheduleBindingRefresh: function (delay = 100) {
+            clearTimeout(this._bindingRefreshTimer);
+            this._bindingRefreshTimer = setTimeout(() => {
+              this._bindingRefreshTimer = null;
+              this.refreshBindingState();
+            }, delay);
+          },
+
+          cancelBindingRefresh: function () {
+            clearTimeout(this._bindingRefreshTimer);
+            this._bindingRefreshTimer = null;
+          },
+
           getCanvasState: function () {
             const objs = App.canvas.getObjects();
             let hasBinding = false;
@@ -5282,39 +5299,55 @@
               if (w <= 0 || h <= 0) return;
               const space = Math.max(2, cfg.dotSpace);
               const r = cfg.dotSize / 2;
-              const epsilon = 0.01;
               const rowHeight = cfg.dotStagger ? (space * Math.sqrt(3)) / 2 : space;
-              const cols = Math.ceil(w / space);
-              const rows = Math.ceil(h / rowHeight);
-              const contentW = cols * space;
-              const contentH = rows * rowHeight;
-              const offsetX = (w - contentW) / 2 + (cfg.dotStagger ? space / 4 : 0);
-              const offsetY = (h - contentH) / 2;
-              let pathData = "";
-              for (let row = -1; row <= rows + 1; row++) {
-                const isStagger = cfg.dotStagger && row % 2 !== 0;
-                const staggerX = isStagger ? space / 2 : 0;
-                for (let col = -1; col <= cols + 1; col++) {
-                  const cx = startX + offsetX + col * space + staggerX;
-                  const cy = startY + offsetY + row * rowHeight;
-                  if (cx - r < startX - epsilon || cx + r > endX + epsilon || cy - r < startY - epsilon || cy + r > endY + epsilon) {
-                    continue;
-                  }
-
-                  const cxF = cx.toFixed(2);
-                  const cy1 = (cy - r).toFixed(2);
-                  const cy2 = (cy + r).toFixed(2);
-                  const rF = r.toFixed(2);
-                  pathData += `M ${cxF} ${cy1} A ${rF} ${rF} 0 1 1 ${cxF} ${cy2} A ${rF} ${rF} 0 1 1 ${cxF} ${cy1} `;
-                }
+              // 点阵用一个小图案平铺，避免加载时为成千上万个圆点生成巨大的 Path 命令。
+              const scale = Math.min(2, Math.max(1, window.devicePixelRatio || 1));
+              const tileW = cfg.dotStagger ? space * 2 : space;
+              const tileH = cfg.dotStagger ? rowHeight * 2 : rowHeight;
+              const tile = document.createElement("canvas");
+              tile.width = Math.max(1, Math.ceil(tileW * scale));
+              tile.height = Math.max(1, Math.ceil(tileH * scale));
+              const ctx = tile.getContext("2d");
+              ctx.scale(scale, scale);
+              ctx.fillStyle = cfg.gridColor;
+              const drawDot = (x, y) => {
+                ctx.beginPath();
+                ctx.arc(x, y, r, 0, Math.PI * 2);
+                ctx.fill();
+              };
+              if (cfg.dotStagger) {
+                const evenY = rowHeight / 2;
+                const oddY = rowHeight * 1.5;
+                drawDot(space / 2, evenY);
+                drawDot((space * 3) / 2, evenY);
+                drawDot(0, oddY);
+                drawDot(space, oddY);
+                drawDot(space * 2, oddY);
+              } else {
+                drawDot(space / 2, rowHeight / 2);
               }
 
-              this._addPathToCanvas(canvas, pathData, cfg, {
-                objectCaching: false,
+              const pattern = new fabric.Pattern({
+                source: tile,
+                repeat: "repeat",
+                patternTransform: [1 / scale, 0, 0, 1 / scale, 0, 0],
+              });
+              const dotGrid = new fabric.Rect({
+                left: startX,
+                top: startY,
+                width: w,
+                height: h,
+                fill: pattern,
                 stroke: null,
                 strokeWidth: 0,
-                fill: cfg.gridColor,
+                selectable: false,
+                evented: false,
+                isGrid: true,
+                excludeFromExport: true,
+                objectCaching: false,
               });
+              canvas.add(dotGrid);
+              canvas.sendToBack(dotGrid);
             },
 
             triangle: function (cfg, canvas) {
@@ -5771,6 +5804,8 @@
           },
 
           drawPaper: function () {
+            // 加载项目时先完成纸张状态更新，等画布反序列化结束后只绘制一次。
+            if (this._suspendRender) return;
             const cfg = this.getSettings();
             const canvas = App.canvas;
             canvas.remove(...canvas.getObjects().filter((o) => o.isGrid));
@@ -6336,7 +6371,9 @@
               App.tools.handleImageUpload(this);
             });
             bindInput("projectImportInput", function () {
-              App.io.loadProject(this.files[0]);
+              const file = this.files?.[0];
+              this.value = "";
+              App.io.loadProject(file);
             });
             bindInput("templatePackImportInput", function () {
               App.templates.importLocal(this.files);
@@ -11500,7 +11537,7 @@
             Utils.toast("项目已保存");
             App.state.hasUnsavedChanges = false;
             App.draft.clear();
-            App.recent.add(fileName, snapshot);
+            App.recent.add(fileName, snapshot, blob.size);
           },
 
           loadProjectData: function (data, opts = {}) {
@@ -11508,6 +11545,14 @@
             return new Promise((resolve) => {
             App.formatPainter.exit();
             App.draft.suspend();
+            App.dataSource.cancelBindingRefresh();
+            App.history.locked = true;
+            App.canvas.renderOnAddRemove = false;
+            App.paper._suspendRender = true;
+            App.state.isPanning = false;
+            App.canvas.selection = true;
+            App.canvas.defaultCursor = "default";
+            App.canvas.setCursor("default");
             try {
 	              App.batch.reset();
               App.state.dataSource.copyField = data.settings?.copyField || "";
@@ -11597,6 +11642,7 @@
               }
               App.paper.changeType(document.getElementById("paperType").value || "ruled", false);
               App.paper.updateSize();
+              App.paper._suspendRender = false;
               App.canvas.clear();
               const done = () => {
                 if (App.state.paperType === "label") {
@@ -11643,6 +11689,9 @@
                 }
                 App.history.reset();
                 App.state.hasUnsavedChanges = !!opts.markUnsaved;
+                App.canvas.renderOnAddRemove = true;
+                App.canvas.requestRenderAll();
+                App.dataSource.cancelBindingRefresh();
                 App.ui.hideLoading();
                 Utils.toast("项目加载成功");
                 App.draft.resume();
@@ -11651,6 +11700,10 @@
               data.canvasData ? App.canvas.loadFromJSON(data.canvasData, done) : done();
             } catch (e) {
               console.error(e);
+              App.paper._suspendRender = false;
+              App.canvas.renderOnAddRemove = true;
+              App.history.locked = false;
+              App.dataSource.cancelBindingRefresh();
               Utils.toast("数据解析异常: " + e.message, "error");
               App.ui.hideLoading();
               App.draft.resume();
@@ -11659,22 +11712,25 @@
             });
           },
 
-          loadProject: function (file) {
+          loadProject: async function (file) {
             if (!file) return;
             App.ui.showLoading("打开中...");
-            const r = new FileReader();
-            r.onload = (e) => {
-              try {
-                const data = JSON.parse(e.target.result);
-                this.loadProjectData(data);
-                App.recent.add(file.name, data);
-              } catch {
-                Utils.toast("文件格式错误", "error");
-              } finally {
-                App.ui.hideLoading();
+            try {
+              const data = JSON.parse(await file.text());
+              await this.loadProjectData(data);
+              // 最近项目会在打开结果完成绘制后再持久化，避免大文件写入阻塞拖拽。
+              const remember = () => App.recent.add(file.name, data, file.size);
+              if ("requestIdleCallback" in window) {
+                window.requestIdleCallback(remember, { timeout: 2000 });
+              } else {
+                setTimeout(remember, 0);
               }
-            };
-            r.readAsText(file);
+            } catch (error) {
+              console.error("打开项目失败", error);
+              Utils.toast("文件格式错误", "error");
+            } finally {
+              App.ui.hideLoading();
+            }
           },
 
           copy: function () {
