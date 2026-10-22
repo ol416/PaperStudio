@@ -6125,11 +6125,10 @@
                 }
 
                 if (!target || target.isGrid) {
-                  if (isAlt) {
-                    App.state.isPanning = false;
-                    App.canvas.selection = true;
-                    App.canvas.defaultCursor = "default";
-                  } else {
+                  if (App.state.drawMode) return;
+                  const isPanGesture = isAlt || opt.e.button === 1;
+                  if (isPanGesture) {
+                    opt.e.preventDefault();
                     App.state.isPanning = true;
                     App.canvas.selection = false;
                     startX = opt.e.clientX;
@@ -6137,6 +6136,10 @@
                     scrollLeft = container.scrollLeft;
                     scrollTop = container.scrollTop;
                     App.canvas.setCursor("grabbing");
+                  } else {
+                    App.state.isPanning = false;
+                    App.canvas.selection = true;
+                    App.canvas.defaultCursor = "default";
                   }
                 }
               },
@@ -6412,6 +6415,12 @@
               if (!isInput()) {
                 e.preventDefault();
                 App.findReplace.open();
+              }
+            });
+            hotkeys("ctrl+a,command+a", (e) => {
+              if (!isInput()) {
+                e.preventDefault();
+                App.tools.selectAll();
               }
             });
             hotkeys("esc", (e) => {
@@ -7081,6 +7090,26 @@
             App.ui.updateLayerList();
             App.ui.updateInspector();
             App.history.saveState();
+          },
+
+          selectAll: function () {
+            this.exitDraw();
+            const objects = App.canvas.getObjects().filter((obj) => {
+              return !obj.isGrid && obj.visible !== false && obj.selectable !== false && obj.evented !== false;
+            });
+
+            if (!objects.length) {
+              App.canvas.discardActiveObject();
+              App.canvas.requestRenderAll();
+              App.ui.updateInspector();
+              return;
+            }
+
+            const selection = objects.length === 1 ? objects[0] : new fabric.ActiveSelection(objects, { canvas: App.canvas });
+            App.canvas.setActiveObject(selection);
+            App.canvas.requestRenderAll();
+            App.ui.updateInspector();
+            App.ui.updateLayerList();
           },
 
           nudge: function (dir) {
