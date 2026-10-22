@@ -636,7 +636,199 @@
 
             const baseToObject = fabric.Textbox.prototype.toObject;
             fabric.Textbox.prototype.toObject = function (props) {
-              return baseToObject.call(this, (props || []).concat(["keepWordsIntact"]));
+              return baseToObject.call(
+                this,
+                (props || []).concat([
+                  "keepWordsIntact",
+                  "isParagraph",
+                  "fitMode",
+                  "paragraphSizeMode",
+                  "paragraphOverflow",
+                  "textVAlign",
+                  "fixedWidth",
+                  "fixedHeight",
+                  "baseFontSize",
+                ]),
+              );
+            };
+          })();
+
+          // 段落文本框：固定尺寸时可做九宫格定位，并统一处理溢出、裁剪和自动适配。
+          (function () {
+            const MIN_FIT_FONT_SIZE = 4;
+            const baseInitDimensions = fabric.Textbox.prototype.initDimensions;
+            const baseGetSVGLeftTopOffsets = fabric.Textbox.prototype._getSVGLeftTopOffsets;
+            const baseRenderCursorOrSelection = fabric.Textbox.prototype.renderCursorOrSelection;
+
+            const normalizeParagraph = (obj) => {
+              if (!obj.isParagraph) return;
+              if (!obj.paragraphSizeMode) {
+                const legacy = obj.fitMode || "fixed";
+                obj.paragraphSizeMode = legacy === "auto" ? "auto" : "fixed";
+                obj.paragraphOverflow =
+                  legacy === "clip" ? "clip" : legacy === "shrink" ? "shrink" : "overflow";
+              }
+              if (obj.paragraphSizeMode !== "auto") obj.paragraphSizeMode = "fixed";
+              if (!["overflow", "clip", "shrink"].includes(obj.paragraphOverflow)) {
+                obj.paragraphOverflow = "overflow";
+              }
+              if (!obj.baseFontSize || obj.baseFontSize < MIN_FIT_FONT_SIZE) {
+                obj.baseFontSize = obj.fontSize;
+              }
+            };
+
+            const syncFixedSize = (obj) => {
+              if (obj.paragraphSizeMode !== "fixed") return;
+              if (!Number.isFinite(obj.fixedWidth) || obj.fixedWidth <= 0) {
+                obj.fixedWidth = obj.width;
+              }
+              if (!Number.isFinite(obj.fixedHeight) || obj.fixedHeight <= 0) {
+                obj.fixedHeight = obj.height;
+              }
+            };
+
+            const measureFittedFontSize = (obj, boxW, boxH) => {
+              const nominalSize = Math.max(MIN_FIT_FONT_SIZE, obj.baseFontSize || obj.fontSize);
+              let low = MIN_FIT_FONT_SIZE;
+              let high = nominalSize;
+              let best = MIN_FIT_FONT_SIZE;
+
+              const measure = (size) => {
+                obj._set("fontSize", size);
+                obj._set("width", boxW);
+                baseInitDimensions.call(obj);
+                const lineFits = obj.calcTextWidth() <= boxW + 0.25;
+                const heightFits = obj.calcTextHeight() <= boxH + 0.25;
+                return lineFits && heightFits;
+              };
+
+              for (let i = 0; i < 12; i++) {
+                const candidate = (low + high) / 2;
+                if (measure(candidate)) {
+                  best = candidate;
+                  low = candidate;
+                } else {
+                  high = candidate;
+                }
+              }
+
+              obj._set("fontSize", best);
+              obj._set("width", boxW);
+              baseInitDimensions.call(obj);
+              return best;
+            };
+
+            const syncClipPath = (obj) => {
+              const shouldClip =
+                obj.isParagraph &&
+                obj.paragraphSizeMode === "fixed" &&
+                obj.paragraphOverflow === "clip";
+              if (!shouldClip) {
+                if (obj.clipPath) obj.clipPath = null;
+                return;
+              }
+              const width = obj.fixedWidth || obj.width;
+              const height = obj.fixedHeight || obj.height;
+              const current = obj.clipPath;
+              const matches =
+                current &&
+                Math.abs(current.width - width) < 0.01 &&
+                Math.abs(current.height - height) < 0.01;
+              if (!matches) {
+                obj.clipPath = new fabric.Rect({
+                  left: -width / 2,
+                  top: -height / 2,
+                  width,
+                  height,
+                  fill: "#000000",
+                  strokeWidth: 0,
+                  absolutePositioned: false,
+                });
+              }
+              obj.set("dirty", true);
+            };
+
+            const applyParagraphDimensions = (obj) => {
+              normalizeParagraph(obj);
+              syncFixedSize(obj);
+              const isFixed = obj.paragraphSizeMode === "fixed";
+              const fixedW = isFixed ? obj.fixedWidth : null;
+              const fixedH = isFixed ? obj.fixedHeight : null;
+
+              if (isFixed) obj._set("width", fixedW);
+              if (isFixed && obj.paragraphOverflow !== "shrink") {
+                obj._set("fontSize", obj.baseFontSize || obj.fontSize);
+              }
+
+              if (isFixed && obj.paragraphOverflow === "shrink") {
+                measureFittedFontSize(obj, fixedW, fixedH);
+                obj._set("width", fixedW);
+                obj._set("height", fixedH);
+              } else {
+                if (!isFixed) obj._set("fontSize", obj.baseFontSize || obj.fontSize);
+                baseInitDimensions.call(obj);
+                if (isFixed) {
+                  obj._set("width", fixedW);
+                  obj._set("height", fixedH);
+                }
+              }
+
+              syncClipPath(obj);
+              obj.set("dirty", true);
+            };
+
+            fabric.Textbox.prototype.initDimensions = function () {
+              if (!this.isParagraph) return baseInitDimensions.call(this);
+              applyParagraphDimensions(this);
+            };
+
+            const baseGetTopOffset = fabric.Textbox.prototype._getTopOffset;
+            fabric.Textbox.prototype._getTopOffset = function () {
+              if (!this.isParagraph) return baseGetTopOffset.call(this);
+              const valign = this.textVAlign || "top";
+              const textHeight = this.calcTextHeight();
+              const delta = this.height - textHeight;
+              if (valign === "middle") return -this.height / 2 + delta / 2;
+              if (valign === "bottom") return -this.height / 2 + delta;
+              return -this.height / 2;
+            };
+
+            fabric.Textbox.prototype._getSVGLeftTopOffsets = function () {
+              const offsets = baseGetSVGLeftTopOffsets.call(this);
+              if (!this.isParagraph) return offsets;
+              return { ...offsets, textTop: this._getTopOffset() };
+            };
+
+            fabric.Textbox.prototype.renderCursorOrSelection = function () {
+              const shouldClip =
+                this.isEditing &&
+                this.isParagraph &&
+                this.paragraphSizeMode === "fixed" &&
+                this.paragraphOverflow === "clip";
+              if (!shouldClip || !this.canvas?.contextTop) {
+                return baseRenderCursorOrSelection.call(this);
+              }
+              const boundaries = this._getCursorBoundaries();
+              const ctx = this.canvas.contextTop;
+              this.clearContextTop(true);
+              ctx.save();
+              ctx.beginPath();
+              ctx.rect(-this.width / 2, -this.height / 2, this.width, this.height);
+              ctx.clip();
+              if (this.selectionStart === this.selectionEnd) {
+                this.renderCursor(boundaries, ctx);
+              } else {
+                this.renderSelection(boundaries, ctx);
+              }
+              ctx.restore();
+              ctx.restore();
+            };
+
+            fabric.Textbox.prototype.__normalizeParagraph = function () {
+              normalizeParagraph(this);
+            };
+            fabric.Textbox.prototype.__syncParagraphClipPath = function () {
+              syncClipPath(this);
             };
           })();
           this.canvas.on("mouse:move", (opt) => {
@@ -652,6 +844,11 @@
           this.canvas.on("object:added", ({ target }) => {
             if (target && !target.isGrid && !target.strokeUniform) {
               target.set("strokeUniform", true);
+            }
+            if (target && target.isParagraph) {
+              target.objectCaching = false;
+              target.__normalizeParagraph?.();
+              target.initDimensions();
             }
           });
           this.canvas.on("object:removed", (e) => {
@@ -681,7 +878,12 @@
           if (document.fonts && typeof document.fonts.addEventListener === "function") {
             // 字体（内置或本地）稍后加载完成时，刷新画布避免字形/度量回退
             document.fonts.addEventListener("loadingdone", () => {
-              if (App.canvas) App.canvas.requestRenderAll();
+              if (App.canvas) {
+                App.canvas.getObjects().forEach((obj) => {
+                  if (obj.isParagraph) obj.initDimensions();
+                });
+                App.canvas.requestRenderAll();
+              }
             });
           }
           this.paper.init();
@@ -4550,7 +4752,7 @@
             const handleLiveTransform = (e) => {
               const t = e.target;
               if (e.transform?.action === "scale" && t.isTable) t.__tableScaling = true;
-              if (["i-text", "textbox", "text"].includes(t.type) && e.transform?.action === "scale") {
+              if (["i-text", "textbox", "text"].includes(t.type) && !t.isParagraph && e.transform?.action === "scale") {
                 if (Math.abs(t.scaleX - t.scaleY) < 0.01 && Math.abs(t.scaleX - 1) > 0.001) {
                   const newSize = t.fontSize * t.scaleX;
                   t.set({
@@ -4613,15 +4815,37 @@
               if (t.type === "textbox") {
                 const finalW = Math.round(t.width * t.scaleX);
                 const finalH = Math.round(t.height * t.scaleY);
-                const finalFontSize = t.fontSize * t.scaleY;
-                t.set({
-                  width: Math.max(finalW, 50),
-                  fontSize: finalFontSize,
-                  scaleX: 1,
-                  scaleY: 1,
-                });
-                if (finalH > t.height) t.set("height", finalH);
-                t.__manualHeight = finalH;
+                if (t.isParagraph) {
+                  const width = Math.max(finalW, 50);
+                  if (t.paragraphSizeMode === "auto") {
+                    t.set({
+                      width,
+                      scaleX: 1,
+                      scaleY: 1,
+                    });
+                  } else {
+                    const height = Math.max(finalH, 20);
+                    t.set({
+                      width,
+                      height,
+                      fixedWidth: width,
+                      fixedHeight: height,
+                      scaleX: 1,
+                      scaleY: 1,
+                    });
+                  }
+                  t.initDimensions();
+                } else {
+                  const finalFontSize = t.fontSize * t.scaleY;
+                  t.set({
+                    width: Math.max(finalW, 50),
+                    fontSize: finalFontSize,
+                    scaleX: 1,
+                    scaleY: 1,
+                  });
+                  if (finalH > t.height) t.set("height", finalH);
+                  t.__manualHeight = finalH;
+                }
                 t.setCoords();
               }
               App.ui.updateInspector();
@@ -5055,31 +5279,41 @@
           },
 
           addParagraph: function () {
+            const w = App.state.baseWidth - Utils.mm2px(50);
+            const h = Utils.mm2px(40);
+            const fs = Utils.pt2px(20);
             const textbox = new fabric.Textbox("在此输入段落文本...\n支持自动换行。", {
               left: 100,
               top: 100,
-              width: App.state.baseWidth - Utils.mm2px(50),
-              fontSize: Utils.pt2px(20),
+              width: w,
+              height: h,
+              fontSize: fs,
               fontFamily: "SourceHanSansCN",
               fill: "#000000",
               splitByGrapheme: false,
               keepWordsIntact: true,
               lockScalingFlip: true,
               minWidth: 50,
+              isParagraph: true,
+              paragraphSizeMode: "fixed",
+              paragraphOverflow: "overflow",
+              textVAlign: "top",
+              fixedWidth: w,
+              fixedHeight: h,
+              baseFontSize: fs,
+              objectCaching: false,
             });
             const ctrl = textbox.controls;
             ctrl.ml.actionHandler = ctrl.mr.actionHandler = fabric.controlsUtils.scalingX;
             ctrl.mt.actionHandler = ctrl.mb.actionHandler = fabric.controlsUtils.scalingY;
-            textbox.__manualHeight = textbox.height;
             textbox.on("editing:exited", function () {
-              if (this.__manualHeight && this.height < this.__manualHeight) {
-                this.set("height", this.__manualHeight);
-                this.setCoords();
-                App.canvas.requestRenderAll();
-              }
+              this.initDimensions();
+              App.canvas.requestRenderAll();
+              App.ui.updateInspector();
             });
             textbox.on("changed", function () {
-              if (this.height > this.__manualHeight) this.__manualHeight = this.height;
+              this.initDimensions();
+              App.canvas.requestRenderAll();
             });
             this._addToCanvas(textbox);
           },
@@ -7031,8 +7265,23 @@
                   let cx = parseFloat(document.getElementById("propX").value),
                     cy = parseFloat(document.getElementById("propY").value);
                   act.setPositionByOrigin(new fabric.Point(Utils.mm2px(key === "left" ? numVal : cx), Utils.mm2px(key === "top" ? numVal : cy)), "left", "top");
-                } else if (key === "width") act.type === "textbox" ? act.set("width", pxVal) : act.set("scaleX", pxVal / act.width);
-                else if (key === "height") act.set("scaleY", pxVal / act.height);
+                } else if (key === "width") {
+                  if (act.isParagraph) {
+                    if (act.paragraphSizeMode !== "auto") act.fixedWidth = pxVal;
+                    act.set("width", pxVal);
+                    act.initDimensions();
+                  } else {
+                    act.type === "textbox" ? act.set("width", pxVal) : act.set("scaleX", pxVal / act.width);
+                  }
+                } else if (key === "height") {
+                  if (act.isParagraph && act.paragraphSizeMode !== "auto") {
+                    act.fixedHeight = pxVal;
+                    act.set("height", pxVal);
+                    act.initDimensions();
+                  } else {
+                    act.set("scaleY", pxVal / act.height);
+                  }
+                }
               }
               if (act.isTable && (key === "width" || key === "height")) {
                 act.setCoords();
@@ -7077,20 +7326,28 @@
               }
 
               if (key === "textAlign" && ["i-text", "textbox", "text"].includes(act.type)) {
-                const validOrigin = val === "justify" ? "left" : val;
-                let anchorPoint;
-                if (validOrigin === "left") {
-                  anchorPoint = act.getPointByOrigin("left", "top");
-                } else if (validOrigin === "right") {
-                  anchorPoint = act.getPointByOrigin("right", "top");
+                if (act.isParagraph) {
+                  // 段落框：仅改变框内水平对齐，不移动框体位置
+                  act.set("textAlign", val);
+                  act.set("dirty", true);
+                  act.setCoords();
+                  this.updateInspector();
                 } else {
-                  anchorPoint = act.getPointByOrigin("center", "top");
+                  const validOrigin = val === "justify" ? "left" : val;
+                  let anchorPoint;
+                  if (validOrigin === "left") {
+                    anchorPoint = act.getPointByOrigin("left", "top");
+                  } else if (validOrigin === "right") {
+                    anchorPoint = act.getPointByOrigin("right", "top");
+                  } else {
+                    anchorPoint = act.getPointByOrigin("center", "top");
+                  }
+                  act.set("textAlign", val);
+                  act.set("originX", validOrigin);
+                  act.setPositionByOrigin(anchorPoint, validOrigin, "top");
+                  act.setCoords();
+                  this.updateInspector();
                 }
-                act.set("textAlign", val);
-                act.set("originX", validOrigin);
-                act.setPositionByOrigin(anchorPoint, validOrigin, "top");
-                act.setCoords();
-                this.updateInspector();
               } else {
                 if (key === "strokeWidth" && val > 0 && (!act.stroke || act.stroke === "transparent")) {
                   act.set("stroke", "#666666");
@@ -7098,16 +7355,109 @@
                   if (colorPicker) colorPicker.value = "#666666";
                 }
 
-                act.type === "activeSelection" ? act.forEachObject((o) => o.set(key, val)) : act.set(key, val);
+                if (key === "fontSize") {
+                  if (act.type === "activeSelection") {
+                    act.forEachObject((o) => {
+                      o.set(key, val);
+                      if (o.isParagraph) o.baseFontSize = val;
+                    });
+                  } else {
+                    act.set(key, val);
+                    if (act.isParagraph) act.baseFontSize = val;
+                  }
+                } else {
+                  act.type === "activeSelection" ? act.forEachObject((o) => o.set(key, val)) : act.set(key, val);
+                }
+
+                if (["fontSize", "fontFamily", "lineHeight", "charSpacing", "fontWeight", "fontStyle"].includes(key)) {
+                  if (act.type === "activeSelection") {
+                    act.forEachObject((o) => {
+                      if (o.isParagraph) o.initDimensions();
+                    });
+                  } else if (act.isParagraph) {
+                    act.initDimensions();
+                  }
+                }
               }
 
               if (key === "fontFamily") {
-                App.fontManager.ensureBundledFont(val).then(() => App.canvas.requestRenderAll());
+                App.fontManager.ensureBundledFont(val).then(() => {
+                  if (act.isParagraph) act.initDimensions();
+                  App.canvas.requestRenderAll();
+                });
               }
               App.canvas.requestRenderAll();
               App.history.saveState();
               App.ui.updateGeo(null, null, act);
             }
+          },
+
+          setParagraphAlign: function (vAlign, hAlign) {
+            const act = App.canvas.getActiveObject();
+            if (!act || !act.isParagraph) return;
+            act.set({ textVAlign: vAlign, textAlign: hAlign });
+            act.set("dirty", true);
+            act.setCoords();
+            App.canvas.requestRenderAll();
+            this.updateParagraphAlignUI();
+            this.updateInspector();
+            App.history.saveState();
+          },
+
+          setParagraphSizeMode: function (mode) {
+            const act = App.canvas.getActiveObject();
+            if (!act || !act.isParagraph) return;
+            const nextMode = mode === "auto" ? "auto" : "fixed";
+            if (nextMode === "fixed") {
+              act.fixedWidth = Math.max(act.width, 50);
+              act.fixedHeight = Math.max(act.height, 20);
+            }
+            act.set("paragraphSizeMode", nextMode);
+            act.objectCaching = false;
+            act.set("dirty", true);
+            act.initDimensions();
+            act.setCoords();
+            App.canvas.requestRenderAll();
+            this.updateInspector();
+            App.history.saveState();
+          },
+
+          setParagraphOverflow: function (mode) {
+            const act = App.canvas.getActiveObject();
+            if (!act || !act.isParagraph) return;
+            act.set("paragraphOverflow", ["overflow", "clip", "shrink"].includes(mode) ? mode : "overflow");
+            act.objectCaching = false;
+            act.set("dirty", true);
+            act.initDimensions();
+            act.setCoords();
+            App.canvas.requestRenderAll();
+            this.updateInspector();
+            App.history.saveState();
+          },
+
+          setFitMode: function (mode) {
+            if (mode === "auto") {
+              this.setParagraphSizeMode("auto");
+              return;
+            }
+            this.setParagraphSizeMode("fixed");
+            this.setParagraphOverflow(mode === "fixed" ? "overflow" : mode);
+          },
+
+          updateParagraphAlignUI: function () {
+            const act = App.canvas.getActiveObject();
+            const wrap = document.getElementById("paragraphAlignWrap");
+            const divider = document.getElementById("paragraphAlignDivider");
+            const isPara = !!(act && act.isParagraph);
+            if (wrap) wrap.classList.toggle("hidden", !isPara);
+            if (divider) divider.classList.toggle("hidden", !isPara);
+            document.querySelectorAll(".paragraph-align-btn").forEach((btn) => {
+              const active = isPara && btn.dataset.v === act.textVAlign && btn.dataset.h === act.textAlign;
+              btn.classList.toggle("bg-red-50", active);
+              btn.classList.toggle("text-red-600", active);
+              btn.classList.toggle("text-slate-500", !active);
+              btn.setAttribute("aria-pressed", String(active));
+            });
           },
 
           updateLineDash: function () {
@@ -7137,6 +7487,7 @@
             if (style === "bold") act.set("fontWeight", act.fontWeight === "bold" ? "normal" : "bold");
             else if (style === "italic") act.set("fontStyle", act.fontStyle === "italic" ? "normal" : "italic");
             else if (style === "underline") act.set("underline", !act.underline);
+            if (act.isParagraph && style !== "underline") act.initDimensions();
             App.canvas.requestRenderAll();
             this.updateInspector();
             App.history.saveState();
@@ -7175,6 +7526,7 @@
               });
             }
 
+            if (act.isParagraph) act.initDimensions();
             act.setCoords();
             App.canvas.requestRenderAll();
             this.updateInspector();
@@ -7277,7 +7629,6 @@
             document.querySelectorAll(".align-btn").forEach((btn) => (btn.disabled = !canAlign));
             const canDistribute = count >= 3;
             document.querySelectorAll(".dist-btn").forEach((btn) => (btn.disabled = !canDistribute));
-            const isParagraph = count === 1 && type === "textbox";
             const btnGroup = document.getElementById("btnGroup");
             const btnUngroup = document.getElementById("btnUngroup");
             if (btnGroup) {
@@ -7297,6 +7648,7 @@
                 btnLock.classList.toggle("bg-red-50", !!isLocked);
               }
             }
+            this.updateParagraphAlignUI();
           },
 
           updateInspector: function () {
@@ -7801,6 +8153,10 @@
             ui("propCharSpacing").parentShow(false);
             ui("shapeDash").show(false);
             ui("rectCornerControl").show(false);
+            document.getElementById("fitModeWrap")?.classList.add("hidden");
+            document.getElementById("paragraphAlignPanel")?.classList.add("hidden");
+            const propH = document.getElementById("propH");
+            if (propH) propH.disabled = false;
             const cell = act.tableData.cells[0]?.[0] || App.tableEditor.createCell();
             ui("propFont").val(cell.fontFamily);
             ui("propSize").val(Utils.px2pt(cell.fontSize));
@@ -7821,7 +8177,7 @@
           _updateTextPanel: function (ui, act) {
             ui("textProps").show(true);
             ui("sharedProps").show(true);
-            const isParagraph = act.type === "textbox";
+            const isParagraph = !!act.isParagraph;
             const align = act.textAlign || "left";
             const alignLabels = {
               left: "靠左",
@@ -7829,14 +8185,66 @@
               right: "靠右",
               justify: "两端对齐",
             };
-            ui("textAlignLabel").text(isParagraph ? "段内位置" : "文字对齐");
+            ui("textAlignLabel").text(isParagraph ? "逐行对齐" : "文字对齐");
             ui("textAlignValue").text(alignLabels[align] || alignLabels.left);
+            const paragraphAlignPanel = document.getElementById("paragraphAlignPanel");
+            if (paragraphAlignPanel) paragraphAlignPanel.classList.toggle("hidden", !isParagraph);
+            if (isParagraph) {
+              const verticalLabel = { top: "上", middle: "中", bottom: "下" };
+              const horizontalLabel = { left: "左", center: "中", right: "右" };
+              const currentVertical = act.textVAlign || "top";
+              const currentHorizontal = ["left", "center", "right"].includes(align) ? align : "left";
+              const label =
+                currentVertical === "middle" && currentHorizontal === "center"
+                  ? "正中央"
+                  : `${horizontalLabel[currentHorizontal]}${verticalLabel[currentVertical]}`;
+              ui("paragraphAlignValue").text(label);
+            }
             document.querySelectorAll(".text-align-btn").forEach((btn) => {
               const isActive = btn.dataset.textAlign === align;
               btn.classList.toggle("bg-red-50", isActive);
               btn.classList.toggle("text-red-600", isActive);
               btn.setAttribute("aria-pressed", String(isActive));
             });
+
+            const fitWrap = document.getElementById("fitModeWrap");
+            const fitHint = document.getElementById("fitModeHint");
+            if (fitWrap) fitWrap.classList.toggle("hidden", !isParagraph);
+            const legacyMode = act.fitMode || "fixed";
+            const sizeMode = isParagraph
+              ? act.paragraphSizeMode || (legacyMode === "auto" ? "auto" : "fixed")
+              : "auto";
+            const overflowMode = isParagraph
+              ? act.paragraphOverflow ||
+                (legacyMode === "clip" ? "clip" : legacyMode === "shrink" ? "shrink" : "overflow")
+              : "overflow";
+            if (isParagraph) {
+              document.querySelectorAll(".size-mode-btn").forEach((btn) => {
+                const isActive = btn.dataset.sizeMode === sizeMode;
+                btn.classList.toggle("bg-red-50", isActive);
+                btn.classList.toggle("text-red-600", isActive);
+                btn.classList.toggle("border-red-300", isActive);
+              });
+              document.querySelectorAll(".overflow-mode-btn").forEach((btn) => {
+                const isActive = btn.dataset.overflow === overflowMode;
+                btn.classList.toggle("bg-red-50", isActive);
+                btn.classList.toggle("text-red-600", isActive);
+                btn.classList.toggle("border-red-300", isActive);
+              });
+              document.getElementById("paragraphOverflowWrap")?.classList.toggle("hidden", sizeMode === "auto");
+              if (fitHint) {
+                fitHint.textContent =
+                  sizeMode === "auto"
+                    ? "宽度保持不变，框高随文本内容自动变化"
+                    : overflowMode === "overflow"
+                    ? "框尺寸固定，文字可显示到框外"
+                    : overflowMode === "clip"
+                    ? "框尺寸固定，文字超出部分被裁剪"
+                    : `框尺寸固定，仅在必要时自动缩小字号（当前 ${Utils.px2pt(act.fontSize).toFixed(1)} pt / 设置 ${Utils.px2pt(act.baseFontSize || act.fontSize).toFixed(1)} pt）`;
+              }
+            }
+            const propH = document.getElementById("propH");
+            if (propH) propH.disabled = isParagraph && sizeMode === "auto";
             ui("propLineHeight")
               .parentShow(true)
               .val(act.lineHeight || 1.2);
@@ -7848,7 +8256,7 @@
             const kwc = document.getElementById("keepWordsIntactCheck");
             if (kwc) kwc.checked = !!act.keepWordsIntact;
             ui("propFont").val(act.fontFamily);
-            ui("propSize").val(Utils.px2pt(act.fontSize));
+            ui("propSize").val(Utils.px2pt(isParagraph ? act.baseFontSize || act.fontSize : act.fontSize));
             ui("propColor").val(act.fill);
             ui("btnBold").active(act.fontWeight === "bold");
             ui("btnItalic").active(act.fontStyle === "italic");
@@ -7911,6 +8319,7 @@
             } else {
               ui("pageNumProps").show(false);
             }
+            this.updateParagraphAlignUI();
           },
 
           _updateLinePanel: function (ui, act) {
@@ -9776,6 +10185,7 @@
                 if (obj.text !== finalString) {
                   obj.set("text", finalString);
                 }
+                if (obj.isParagraph) obj.initDimensions();
               }
 
               if (obj.syncMode === "share" && obj.sharedId) {

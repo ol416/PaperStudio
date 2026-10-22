@@ -1227,6 +1227,23 @@
 
           <div class="w-px h-3 bg-gray-300"></div>
 
+          <div id="paragraphAlignWrap" class="hidden flex items-center gap-1">
+            <span class="text-[10px] font-bold text-slate-400 whitespace-nowrap">段落对齐</span>
+            <div class="grid grid-cols-3 gap-px p-px border border-gray-200 rounded bg-white">
+              <button data-v="top" data-h="left" onclick="App.ui.setParagraphAlign('top','left')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-start justify-start text-slate-500" title="左上" aria-label="文字在框内左上对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="top" data-h="center" onclick="App.ui.setParagraphAlign('top','center')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-start justify-center text-slate-500" title="中上" aria-label="文字在框内中上对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="top" data-h="right" onclick="App.ui.setParagraphAlign('top','right')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-start justify-end text-slate-500" title="右上" aria-label="文字在框内右上对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="middle" data-h="left" onclick="App.ui.setParagraphAlign('middle','left')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-center justify-start text-slate-500" title="左中" aria-label="文字在框内左中对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="middle" data-h="center" onclick="App.ui.setParagraphAlign('middle','center')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-center justify-center text-slate-500" title="居中" aria-label="文字在框内居中对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="middle" data-h="right" onclick="App.ui.setParagraphAlign('middle','right')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-center justify-end text-slate-500" title="右中" aria-label="文字在框内右中对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="bottom" data-h="left" onclick="App.ui.setParagraphAlign('bottom','left')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-end justify-start text-slate-500" title="左下" aria-label="文字在框内左下对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="bottom" data-h="center" onclick="App.ui.setParagraphAlign('bottom','center')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-end justify-center text-slate-500" title="中下" aria-label="文字在框内中下对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+              <button data-v="bottom" data-h="right" onclick="App.ui.setParagraphAlign('bottom','right')" class="paragraph-align-btn w-[6px] h-[6px] rounded-sm hover:bg-gray-100 flex items-end justify-end text-slate-500" title="右下" aria-label="文字在框内右下对齐"><span class="w-[2px] h-[2px] rounded-full bg-current"></span></button>
+            </div>
+          </div>
+
+          <div id="paragraphAlignDivider" class="hidden w-px h-3 bg-gray-300"></div>
+
           <div class="flex items-center gap-1">
             <button onclick="App.ui.alignObject('left')" class="tune-btn tool-icon-btn" title="左对齐于画布" disabled>
               <i class="ph ph-align-left-simple"></i>
@@ -1693,6 +1710,41 @@
                       <i class="ph ph-text-align-justify"></i>
                     </button>
                   </div>
+                </div>
+                <div id="paragraphAlignPanel" class="hidden">
+                  <div class="flex items-center justify-between mb-1">
+                    <label class="compact-label mb-0">框内对齐</label>
+                    <span id="paragraphAlignValue" class="text-[10px] text-slate-400">左上</span>
+                  </div>
+                  <div class="grid grid-cols-3 gap-1 p-1 border rounded bg-gray-50">
+                    <button data-v="top" data-h="left" onclick="App.ui.setParagraphAlign('top','left')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-start justify-start p-1 text-slate-500" title="左上" aria-label="文字在框内左上对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="top" data-h="center" onclick="App.ui.setParagraphAlign('top','center')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-start justify-center p-1 text-slate-500" title="中上" aria-label="文字在框内中上对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="top" data-h="right" onclick="App.ui.setParagraphAlign('top','right')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-start justify-end p-1 text-slate-500" title="右上" aria-label="文字在框内右上对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="middle" data-h="left" onclick="App.ui.setParagraphAlign('middle','left')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-center justify-start p-1 text-slate-500" title="左中" aria-label="文字在框内左中对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="middle" data-h="center" onclick="App.ui.setParagraphAlign('middle','center')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-center justify-center p-1 text-slate-500" title="正中央" aria-label="文字在框内正中央对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="middle" data-h="right" onclick="App.ui.setParagraphAlign('middle','right')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-center justify-end p-1 text-slate-500" title="右中" aria-label="文字在框内右中对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="bottom" data-h="left" onclick="App.ui.setParagraphAlign('bottom','left')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-end justify-start p-1 text-slate-500" title="左下" aria-label="文字在框内左下对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="bottom" data-h="center" onclick="App.ui.setParagraphAlign('bottom','center')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-end justify-center p-1 text-slate-500" title="中下" aria-label="文字在框内中下对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                    <button data-v="bottom" data-h="right" onclick="App.ui.setParagraphAlign('bottom','right')" class="paragraph-align-btn h-7 rounded border hover:border-red-300 flex items-end justify-end p-1 text-slate-500" title="右下" aria-label="文字在框内右下对齐"><span class="w-1.5 h-1.5 rounded-full bg-current"></span></button>
+                  </div>
+                </div>
+                <div id="fitModeWrap" class="hidden space-y-2">
+                  <div>
+                    <label class="compact-label">框尺寸</label>
+                    <div class="grid grid-cols-2 gap-1 mt-1">
+                      <button data-size-mode="fixed" onclick="App.ui.setParagraphSizeMode('fixed')" class="size-mode-btn text-[11px] py-1 border rounded hover:bg-gray-50 text-slate-600">固定尺寸</button>
+                      <button data-size-mode="auto" onclick="App.ui.setParagraphSizeMode('auto')" class="size-mode-btn text-[11px] py-1 border rounded hover:bg-gray-50 text-slate-600">随内容变化</button>
+                    </div>
+                  </div>
+                  <div id="paragraphOverflowWrap">
+                    <label class="compact-label">溢出处理</label>
+                    <div class="grid grid-cols-3 gap-1 mt-1">
+                      <button data-overflow="overflow" onclick="App.ui.setParagraphOverflow('overflow')" class="overflow-mode-btn text-[10px] py-1 border rounded hover:bg-gray-50 text-slate-600">允许溢出</button>
+                      <button data-overflow="clip" onclick="App.ui.setParagraphOverflow('clip')" class="overflow-mode-btn text-[10px] py-1 border rounded hover:bg-gray-50 text-slate-600">裁剪</button>
+                      <button data-overflow="shrink" onclick="App.ui.setParagraphOverflow('shrink')" class="overflow-mode-btn text-[10px] py-1 border rounded hover:bg-gray-50 text-slate-600">自动缩放文本</button>
+                    </div>
+                  </div>
+                  <p id="fitModeHint" class="text-[10px] text-slate-400 mt-1"></p>
                 </div>
                 <div>
                   <label class="compact-label flex justify-between"
