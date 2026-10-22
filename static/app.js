@@ -2377,7 +2377,7 @@
             await App.dataSource.renderPage(this.state.activePageIndex || 0);
             App.state.hasUnsavedChanges = true;
             App.draft.schedule();
-            Utils.toast("当前页修改已应用到模板");
+            Utils.toast("当前页修改已同步到全部未单独设置的页面");
           },
 
           updateUI: function () {
@@ -2389,8 +2389,14 @@
             const applyBtn = document.getElementById("vdpApplyTemplateBtn");
             const selectedReset = document.getElementById("batchResetContentBtn");
             if (badge) badge.classList.toggle("hidden", !customized);
-            if (resetBtn) resetBtn.classList.toggle("hidden", !customized);
-            if (applyBtn) applyBtn.classList.toggle("hidden", !active);
+            if (resetBtn) {
+              resetBtn.classList.remove("hidden");
+              resetBtn.disabled = !customized;
+            }
+            if (applyBtn) {
+              applyBtn.classList.remove("hidden");
+              applyBtn.disabled = !active;
+            }
             if (selectedReset) {
               const obj = App.canvas?.getActiveObject();
               const id = obj?.templateObjectId || obj?.id;
