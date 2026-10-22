@@ -6162,6 +6162,7 @@
               },
 
               "text:editing:entered": (e) => {
+                App.formatPainter.exit();
                 const t = e.target;
                 if (t.syncMode === "ref" && t.refId) {
                   const parent = App.content.findObjectBySharedId(t.refId);
@@ -6192,6 +6193,24 @@
               "object:resizing": handleLiveTransform,
               "object:modified": handleObjectModified,
             });
+            const painterSurface = App.canvas.wrapperEl || App.canvas.upperCanvasEl;
+            if (painterSurface && !painterSurface.__formatPainterBound) {
+              painterSurface.__formatPainterBound = true;
+              painterSurface.addEventListener("mousedown", (event) => App.formatPainter.handleCanvasMouseDown(event), true);
+            }
+            if (!document.__formatPainterEscBound) {
+              document.__formatPainterEscBound = true;
+              document.addEventListener(
+                "keydown",
+                (event) => {
+                  if (event.key !== "Escape" || !App.formatPainter.isActive()) return;
+                  event.preventDefault();
+                  event.stopImmediatePropagation();
+                  App.formatPainter.exit();
+                },
+                true,
+              );
+            }
             document.addEventListener(
               "mousemove",
               (e) => {
@@ -6396,6 +6415,11 @@
               }
             });
             hotkeys("esc", (e) => {
+              if (App.formatPainter.isActive()) {
+                e.preventDefault();
+                App.formatPainter.exit();
+                return;
+              }
               if (App.state.drawMode) {
                 e.preventDefault();
                 App.tools.exitDraw();
@@ -6513,6 +6537,7 @@
           }),
 
           _addToCanvas: function (obj) {
+            App.formatPainter.exit();
             this.exitDraw();
             App.canvas.add(obj);
             App.canvas.setActiveObject(obj);
@@ -6758,6 +6783,7 @@
           },
 
           toggleDraw: function () {
+            if (!App.state.drawMode) App.formatPainter.exit();
             this._setDrawMode(!App.state.drawMode);
           },
 
@@ -8560,9 +8586,20 @@
             }
           },
 
+          stopTextEditing: function (act = App.canvas.getActiveObject()) {
+            if (act?.isEditing && typeof act.exitEditing === "function") {
+              act.exitEditing();
+            }
+            const hiddenTextarea = App.canvas?.hiddenTextarea;
+            if (hiddenTextarea && document.activeElement === hiddenTextarea) {
+              hiddenTextarea.blur();
+            }
+          },
+
           setProp: function (key, val) {
             const act = App.canvas.getActiveObject();
             if (act) {
+              if (["i-text", "textbox", "text"].includes(act.type)) this.stopTextEditing(act);
               if (act.isTable) {
                 const map = {};
                 if (key === "fontFamily") map.fontFamily = val;
@@ -8750,6 +8787,7 @@
               }
               return;
             }
+            if (["i-text", "textbox", "text"].includes(act.type)) this.stopTextEditing(act);
             if (style === "bold") act.set("fontWeight", act.fontWeight === "bold" ? "normal" : "bold");
             else if (style === "italic") act.set("fontStyle", act.fontStyle === "italic" ? "normal" : "italic");
             else if (style === "underline") act.set("underline", !act.underline);
@@ -8914,6 +8952,7 @@
                 btnLock.classList.toggle("bg-red-50", !!isLocked);
               }
             }
+            App.formatPainter.syncButtonState();
             this.updateParagraphAlignUI();
           },
 
@@ -10222,6 +10261,269 @@
           },
         },
 
+        // --- 格式刷 (文字样式复制) ---
+        formatPainter: {
+          _snapshot: null,
+          _sourceRef: null,
+          _continuous: false,
+          _timer: null,
+          _lastWarningAt: 0,
+          _previousCursor: "default",
+
+          _isTextObject: function (obj) {
+            return !!obj && ["i-text", "textbox", "text"].includes(obj.type) && !obj.isTable && !obj.group;
+          },
+
+          _cloneValue: function (value) {
+            if (!value || typeof value !== "object") return value;
+            try {
+              return JSON.parse(JSON.stringify(value));
+            } catch {
+              return value;
+            }
+          },
+
+          isActive: function () {
+            return !!this._snapshot;
+          },
+
+          _captureFormat: function (obj) {
+            return {
+              fontFamily: obj.fontFamily,
+              fontSize: obj.isParagraph ? obj.baseFontSize || obj.fontSize : obj.fontSize,
+              fontWeight: obj.fontWeight || "normal",
+              fontStyle: obj.fontStyle || "normal",
+              underline: !!obj.underline,
+              fill: this._cloneValue(obj.fill),
+              textAlign: obj.textAlign || "left",
+              lineHeight: obj.lineHeight ?? 1.16,
+              charSpacing: obj.charSpacing ?? 0,
+              keepWordsIntact: !!obj.keepWordsIntact,
+              opacity: Number.isFinite(obj.opacity) ? obj.opacity : 1,
+              textVAlign: obj.isParagraph ? obj.textVAlign || "top" : null,
+            };
+          },
+
+          _readFormatState: function (obj) {
+            return {
+              fontFamily: obj.fontFamily,
+              fontSize: obj.isParagraph ? obj.baseFontSize || obj.fontSize : obj.fontSize,
+              fontWeight: obj.fontWeight || "normal",
+              fontStyle: obj.fontStyle || "normal",
+              underline: !!obj.underline,
+              fill: this._cloneValue(obj.fill),
+              textAlign: obj.textAlign || "left",
+              lineHeight: obj.lineHeight ?? 1.16,
+              charSpacing: obj.charSpacing ?? 0,
+              keepWordsIntact: !!obj.keepWordsIntact,
+              opacity: Number.isFinite(obj.opacity) ? obj.opacity : 1,
+              textVAlign: obj.isParagraph ? obj.textVAlign || "top" : null,
+            };
+          },
+
+          _stopTextEditing: function (obj) {
+            App.ui.stopTextEditing(obj);
+          },
+
+          begin: function (opts = {}) {
+            if (App.state.drawMode) App.tools.exitDraw();
+            const source = App.canvas.getActiveObject();
+            if (!this._isTextObject(source)) {
+              Utils.toast("请先选中一个文字对象作为格式来源", "info");
+              this.syncButtonState();
+              return false;
+            }
+
+            this._stopTextEditing(source);
+            if (!this.isActive()) {
+              this._previousCursor = App.canvas.defaultCursor || "default";
+            }
+            this._clearTimer();
+            this._sourceRef = source;
+            this._continuous = !!opts.continuous;
+            this._snapshot = {
+              sourceId: source.id || "",
+              sourceType: source.type,
+              sourceIsParagraph: !!source.isParagraph,
+              format: this._captureFormat(source),
+            };
+            App.canvas.defaultCursor = "copy";
+            App.canvas.setCursor("copy");
+            this.syncButtonState();
+            return true;
+          },
+
+          exit: function () {
+            this._clearTimer();
+            this._snapshot = null;
+            this._sourceRef = null;
+            this._continuous = false;
+            if (App.canvas) {
+              const cursor = this._previousCursor || "default";
+              App.canvas.defaultCursor = cursor;
+              App.canvas.setCursor(cursor);
+            }
+            this.syncButtonState();
+          },
+
+          _clearTimer: function () {
+            if (this._timer) {
+              clearTimeout(this._timer);
+              this._timer = null;
+            }
+          },
+
+          handleButtonClick: function (event) {
+            if (this.isActive()) {
+              this.exit();
+              return;
+            }
+            if (event?.detail > 1) return;
+            this._clearTimer();
+            this._timer = setTimeout(() => {
+              this._timer = null;
+              this.begin({
+                continuous: false,
+              });
+            }, 220);
+          },
+
+          handleButtonDoubleClick: function (event) {
+            event?.preventDefault();
+            this._clearTimer();
+            this.begin({
+              continuous: true,
+            });
+          },
+
+          _warn: function (message) {
+            const now = Date.now();
+            if (now - this._lastWarningAt < 900) return;
+            this._lastWarningAt = now;
+            Utils.toast(message, "info");
+          },
+
+          _applyTextAlign: function (target, textAlign) {
+            target.set("textAlign", textAlign);
+          },
+
+          applyTo: function (target) {
+            if (!this.isActive() || !this._isTextObject(target) || target === this._sourceRef) return false;
+            if (target.lockMovementX || target.lockMovementY) return false;
+
+            const snapshot = this._snapshot.format;
+            const before = JSON.stringify(this._readFormatState(target));
+            const preservedGeometry = {
+              left: target.left,
+              top: target.top,
+              width: target.width,
+              height: target.height,
+              scaleX: target.scaleX,
+              scaleY: target.scaleY,
+              angle: target.angle,
+              originX: target.originX,
+              originY: target.originY,
+            };
+            const updates = {
+              fontFamily: snapshot.fontFamily,
+              fontWeight: snapshot.fontWeight,
+              fontStyle: snapshot.fontStyle,
+              underline: snapshot.underline,
+              fill: this._cloneValue(snapshot.fill),
+              lineHeight: snapshot.lineHeight,
+              charSpacing: snapshot.charSpacing,
+              keepWordsIntact: snapshot.keepWordsIntact,
+              splitByGrapheme: !snapshot.keepWordsIntact,
+              opacity: snapshot.opacity,
+            };
+
+            if (target.isParagraph) {
+              updates.baseFontSize = snapshot.fontSize;
+              updates.fontSize = snapshot.fontSize;
+              if (this._snapshot.sourceIsParagraph) updates.textVAlign = snapshot.textVAlign;
+            } else {
+              updates.fontSize = snapshot.fontSize;
+            }
+
+            target.set(updates);
+            this._applyTextAlign(target, snapshot.textAlign);
+            target.set("dirty", true);
+            if (typeof target.initDimensions === "function") target.initDimensions();
+            target.set(preservedGeometry);
+            target.setCoords();
+
+            const after = JSON.stringify(this._readFormatState(target));
+            if (before === after) return false;
+
+            if (App.fontManager && typeof App.fontManager.ensureBundledFont === "function") {
+              App.fontManager.ensureBundledFont(snapshot.fontFamily).then(() => {
+                if (target.canvas) {
+                  if (target.isParagraph && typeof target.initDimensions === "function") target.initDimensions();
+                  target.set(preservedGeometry);
+                  target.setCoords();
+                  App.canvas.requestRenderAll();
+                }
+              });
+            }
+
+            App.canvas.requestRenderAll();
+            App.history.saveState();
+            if (!this._continuous) this.exit();
+            if (App.ui) App.ui.updateInspector();
+            return true;
+          },
+
+          handleCanvasMouseDown: function (event) {
+            if (!this.isActive() || !App.canvas) return;
+            const target = App.canvas.findTarget(event);
+            if (!target || target.isGrid) return;
+
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (!this._isTextObject(target)) {
+              this._warn("格式刷仅支持文字对象");
+              return;
+            }
+            if (target === this._sourceRef) {
+              this._warn("请选择其他文字对象作为格式目标");
+              return;
+            }
+            if (target.lockMovementX || target.lockMovementY) {
+              this._warn("目标文字已锁定，无法应用格式");
+              return;
+            }
+
+            this._stopTextEditing(App.canvas.getActiveObject());
+            App.canvas.discardActiveObject();
+            App.canvas.setActiveObject(target);
+            target.setCoords();
+            const applied = this.applyTo(target);
+            App.canvas.requestRenderAll();
+            if (App.ui) App.ui.updateInspector();
+            if (!applied && this.isActive()) this._warn("目标文字已具有相同格式");
+          },
+
+          syncButtonState: function () {
+            const button = document.getElementById("btnFormatPainter");
+            if (!button) return;
+            const active = this.isActive();
+            const source = App.canvas?.getActiveObject();
+            const canBegin = this._isTextObject(source);
+            button.disabled = !active && !canBegin;
+            button.classList.toggle("bg-red-50", active);
+            button.classList.toggle("text-red-600", active);
+            button.classList.toggle("ring-1", active);
+            button.classList.toggle("ring-red-200", active);
+            button.classList.toggle("text-gray-600", !active);
+            button.setAttribute("aria-pressed", String(active));
+            button.title = active
+              ? this._continuous
+                ? "格式刷连续模式：点击文字应用，按 Esc 或再次点击退出"
+                : "格式刷：点击文字应用一次，按 Esc 取消"
+              : "格式刷：单击应用一次，双击连续应用（Esc 退出）";
+          },
+        },
+
         // --- 查找替换 (全画布批量操作) ---
         findReplace: {
           _mode: "text",
@@ -11172,6 +11474,7 @@
           loadProjectData: function (data, opts = {}) {
             // 返回 Promise，便于调用方（例如打印历史“重做”）等待画布加载完成
             return new Promise((resolve) => {
+            App.formatPainter.exit();
             App.draft.suspend();
             try {
 	              App.batch.reset();
@@ -11571,6 +11874,7 @@
             }
           },
           enterPreview: function () {
+            App.formatPainter.exit();
             const json = App.canvas.toJSON(CUSTOM_PROPS);
             json.objects = json.objects.filter((o) => !o.isGrid);
 	            App.batch._assignObjectIds(json.objects);
@@ -11591,6 +11895,7 @@
           },
 
           enterDesign: function () {
+            App.formatPainter.exit();
             App.state.label.mode = "design";
             if (App.state.label.designContent) {
               App.canvas.loadFromJSON(App.state.label.designContent, () => {
@@ -12332,6 +12637,7 @@
           },
 
           load: async function (id) {
+            App.formatPainter.exit();
             const localTemplate = this.localData.find((template) => template.id === id);
             if (localTemplate) {
               App.ui.showLoading("加载本地模板...");

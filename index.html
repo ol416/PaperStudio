@@ -311,6 +311,7 @@
               <div class="flex justify-between"><span class="text-slate-600">复制</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + C</span></div>
               <div class="flex justify-between"><span class="text-slate-600">粘贴</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + V</span></div>
               <div class="flex justify-between"><span class="text-slate-600">复制并粘贴（重复）</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Ctrl + D</span></div>
+              <div class="flex justify-between"><span class="text-slate-600">格式刷</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">单击 / 双击</span></div>
               <div class="flex justify-between"><span class="text-slate-600">删除</span><span class="text-xs font-mono bg-gray-100 px-2 py-0.5 rounded text-slate-600">Delete</span></div>
             </div>
           </div>
@@ -785,6 +786,16 @@
             <button onclick="App.tools.addShape('diamond')" class="w-full text-left px-2 py-2 hover:bg-gray-100 flex items-center gap-2"><i class="ph ph-diamond"></i> 菱形</button>
           </div>
         </div>
+        <button
+          id="btnFormatPainter"
+          onclick="App.formatPainter.handleButtonClick(event)"
+          ondblclick="App.formatPainter.handleButtonDoubleClick(event)"
+          aria-pressed="false"
+          disabled
+          class="flex items-center gap-1 px-3 py-1.5 rounded font-medium transition text-gray-600 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+          title="格式刷：单击应用一次，双击连续应用（Esc 退出）">
+          <i class="ph ph-paint-brush text-lg"></i> 格式刷
+        </button>
       </div>
 
       <div class="w-80 flex justify-end gap-2">
