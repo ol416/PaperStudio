@@ -6131,10 +6131,11 @@
                 }
 
                 if (!target || target.isGrid) {
-                  if (App.state.drawMode) return;
-                  const isPanGesture = isAlt || opt.e.button === 1;
-                  if (isPanGesture) {
-                    opt.e.preventDefault();
+                  if (isAlt) {
+                    App.state.isPanning = false;
+                    App.canvas.selection = true;
+                    App.canvas.defaultCursor = "default";
+                  } else {
                     App.state.isPanning = true;
                     App.canvas.selection = false;
                     startX = opt.e.clientX;
@@ -6142,10 +6143,6 @@
                     scrollLeft = container.scrollLeft;
                     scrollTop = container.scrollTop;
                     App.canvas.setCursor("grabbing");
-                  } else {
-                    App.state.isPanning = false;
-                    App.canvas.selection = true;
-                    App.canvas.defaultCursor = "default";
                   }
                 }
               },
