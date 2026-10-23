@@ -561,11 +561,25 @@
           };
           // 混排换行：开启 keepWordsIntact 时，中文可逐字换行、英文单词保持完整，
           // 并在可断行处插入零宽空格（U+200B）以便两端对齐时仍能拉伸汉字间距。
+          // 注意：该逻辑需同时覆盖 Textbox（段落/数据/表格文本）与 Text/IText
+          // （addText 创建的普通文本），否则普通文本对象上的“保留完整单词”将不生效。
           (function () {
-            const baseWrapLine = fabric.Textbox.prototype._wrapLine;
+            const baseWrapLineBox = fabric.Textbox.prototype._wrapLine;
+            const baseWrapLineText = fabric.Text.prototype._wrapLine;
             const CJK_RE = /[　-〿぀-ヿ㐀-䶿一-鿿豈-﫿！-￯]/;
             const SPACE_RE = /[ \t\r]/;
             const ZWSP = "​";
+            const EXTRA_TOOBJECT_PROPS = [
+              "keepWordsIntact",
+              "isParagraph",
+              "fitMode",
+              "paragraphSizeMode",
+              "paragraphOverflow",
+              "textVAlign",
+              "fixedWidth",
+              "fixedHeight",
+              "baseFontSize",
+            ];
 
             function tokenizeLine(text) {
               const graphemes = fabric.util.string.graphemeSplit(text);
@@ -600,11 +614,16 @@
               return { tokens, seps };
             }
 
-            fabric.Textbox.prototype._wrapLine = function (text, lineIndex, desiredWidth, reservedSpace) {
-              if (!this.keepWordsIntact) {
-                return baseWrapLine.call(this, text, lineIndex, desiredWidth, reservedSpace);
-              }
-              const r = reservedSpace || 0;
+            function makeWrapLine(baseWrapLine) {
+              return function (text, lineIndex, desiredWidth, reservedSpace) {
+                if (!this.keepWordsIntact) {
+                  if (baseWrapLine) {
+                    return baseWrapLine.call(this, text, lineIndex, desiredWidth, reservedSpace);
+                  }
+                  // 兜底：缺少基类实现时（理论上不会发生）仍按“保留完整单词”处理，
+                  // 避免未定义函数导致整个文本对象初始化崩溃。
+                }
+                const r = reservedSpace || 0;
               const m = this._getWidthOfCharSpacing();
               const { tokens, seps } = tokenizeLine(text);
               const nv = tokens.length;
@@ -642,27 +661,23 @@
                 p = false;
                 if (g < s) g = s;
               }
-              c.push(h);
-              if (g + r > this.dynamicMinWidth) this.dynamicMinWidth = g - m + r;
-              return c;
-            };
+                c.push(h);
+                if (g + r > this.dynamicMinWidth) this.dynamicMinWidth = g - m + r;
+                return c;
+              };
+            }
 
-            const baseToObject = fabric.Textbox.prototype.toObject;
+            // Textbox 与 Text/IText 共用同一套混排换行逻辑，缺一不可。
+            fabric.Textbox.prototype._wrapLine = makeWrapLine(baseWrapLineBox);
+            fabric.Text.prototype._wrapLine = makeWrapLine(baseWrapLineText);
+
+            const boxToObject = fabric.Textbox.prototype.toObject;
             fabric.Textbox.prototype.toObject = function (props) {
-              return baseToObject.call(
-                this,
-                (props || []).concat([
-                  "keepWordsIntact",
-                  "isParagraph",
-                  "fitMode",
-                  "paragraphSizeMode",
-                  "paragraphOverflow",
-                  "textVAlign",
-                  "fixedWidth",
-                  "fixedHeight",
-                  "baseFontSize",
-                ]),
-              );
+              return boxToObject.call(this, (props || []).concat(EXTRA_TOOBJECT_PROPS));
+            };
+            const textToObject = fabric.Text.prototype.toObject;
+            fabric.Text.prototype.toObject = function (props) {
+              return textToObject.call(this, (props || []).concat(EXTRA_TOOBJECT_PROPS));
             };
           })();
 
@@ -6421,6 +6436,33 @@
             bindInput("imgReplaceInput", function () {
               App.tools.replaceActiveImage(this);
             });
+            document.addEventListener("paste", (e) => {
+              const target = e.target;
+              const isEditable =
+                target?.isContentEditable ||
+                ["INPUT", "TEXTAREA", "SELECT"].includes(target?.tagName);
+              if (isEditable) return;
+
+              const clipboardData = e.clipboardData;
+              const items = Array.from(clipboardData?.items || []);
+              const imageItem = items.find(
+                (item) => item.kind === "file" && item.type.startsWith("image/"),
+              );
+              const imageFile =
+                imageItem?.getAsFile() ||
+                Array.from(clipboardData?.files || []).find((file) => file.type.startsWith("image/"));
+
+              if (imageFile) {
+                e.preventDefault();
+                App.tools.handleImageFile(imageFile);
+                return;
+              }
+
+              if (App.state.clipboard) {
+                e.preventDefault();
+                App.io.paste();
+              }
+            });
             const bindModalClose = (id) => {
               const el = document.getElementById(id);
               if (el) {
@@ -6527,12 +6569,6 @@
               if (!isInput() && App.canvas.getActiveObject()) {
                 e.preventDefault();
                 App.io.copy();
-              }
-            });
-            hotkeys("ctrl+v,command+v", (e) => {
-              if (!isInput() && App.state.clipboard) {
-                e.preventDefault();
-                App.io.paste();
               }
             });
             hotkeys("up,down,left,right", (e, h) => {
@@ -6646,6 +6682,8 @@
                 textAlign: "left",
                 prefix: "",
                 suffix: "",
+                splitByGrapheme: false,
+                keepWordsIntact: true,
               }),
             );
           },
@@ -6958,29 +6996,37 @@
           },
 
           handleImageUpload: function (input) {
-            if (input.files?.[0]) {
-              const reader = new FileReader();
-              reader.onload = (e) =>
-                fabric.Image.fromURL(e.target.result, (img) => {
-                  const canvasW = App.state.baseWidth;
-                  const canvasH = App.state.baseHeight;
-                  const targetW = canvasW * 0.8;
-                  const targetH = canvasH * 0.8;
-                  const scaleX = targetW / img.width;
-                  const scaleY = targetH / img.height;
-                  const scale = Math.min(scaleX, scaleY);
-                  img.scale(scale);
-                  img.set({
-                    left: canvasW / 2,
-                    top: canvasH / 2,
-                    originX: "center",
-                    originY: "center",
-                  });
-                  this._addToCanvas(img);
-                  input.value = "";
-                });
-              reader.readAsDataURL(input.files[0]);
+            const file = input.files?.[0];
+            input.value = "";
+            if (file) this.handleImageFile(file);
+          },
+
+          handleImageFile: function (file) {
+            if (!file || !file.type?.startsWith("image/")) {
+              return Utils.toast("剪贴板中没有可导入的图片", "error");
             }
+
+            const reader = new FileReader();
+            reader.onerror = () => Utils.toast("读取图片失败", "error");
+            reader.onload = (e) =>
+              fabric.Image.fromURL(e.target.result, (img) => {
+                const canvasW = App.state.baseWidth;
+                const canvasH = App.state.baseHeight;
+                const targetW = canvasW * 0.8;
+                const targetH = canvasH * 0.8;
+                const scaleX = targetW / img.width;
+                const scaleY = targetH / img.height;
+                const scale = Math.min(scaleX, scaleY);
+                img.scale(scale);
+                img.set({
+                  left: canvasW / 2,
+                  top: canvasH / 2,
+                  originX: "center",
+                  originY: "center",
+                });
+                this._addToCanvas(img);
+              });
+            reader.readAsDataURL(file);
           },
           addSerialNumber: function () {
             const hasDataSource = App.state.dataSource.isActive || App.state.paperType === "label";
