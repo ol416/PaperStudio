@@ -2416,6 +2416,7 @@
           _pendingList: [],
           _suspended: false,
           _chain: null,
+          _sessionId: null,
 
           // 画布 / 纸张 / 数据源变更后调用，防抖合并写入
           schedule: function () {
@@ -2439,6 +2440,10 @@
             this._suspended = true;
           },
 
+          beginSession: function (sessionId) {
+            this._sessionId = sessionId || Utils.generateUniqueId();
+          },
+
           resume: function () {
             this._suspended = false;
           },
@@ -2456,6 +2461,8 @@
                 includeDataSource: true,
                 thumbnailMultiplier: 0.25,
               });
+              if (!this._sessionId) this.beginSession();
+              snapshot.draftSessionId = this._sessionId;
               const list = await this._loadList();
               list.unshift(snapshot);
               // 末位删除：超过上限时丢弃最旧（末尾）的草稿
@@ -2489,8 +2496,36 @@
             }
             this.lastSavedAt = null;
             this._pendingList = [];
+            this._sessionId = null;
             this.renderList();
             idbKeyval.del(this.storageKey).catch(() => {});
+          },
+
+          // 保存项目时只清理当前编辑会话产生的草稿，保留其他项目的未保存内容。
+          clearCurrent: function () {
+            const sessionId = this._sessionId;
+            if (!sessionId) return Promise.resolve();
+            this.hasPending = false;
+            if (this.timer) {
+              clearTimeout(this.timer);
+              this.timer = null;
+            }
+            this._chain = (this._chain || Promise.resolve())
+              .then(async () => {
+                const stored = await idbKeyval.get(this.storageKey);
+                const list = Array.isArray(stored) ? stored : this._pendingList;
+                const kept = list.filter((draft) => draft.draftSessionId !== sessionId);
+                if (kept.length === 0) {
+                  await idbKeyval.del(this.storageKey);
+                } else if (kept.length !== list.length) {
+                  await idbKeyval.set(this.storageKey, kept);
+                }
+                this._pendingList = kept;
+                this.lastSavedAt = null;
+                this.renderList();
+              })
+              .catch((e) => console.error("清理当前草稿失败", e));
+            return this._chain;
           },
 
           // 仅加载并更新入口角标，不再自动弹出；由用户通过头部"草稿箱"主动打开
@@ -2560,9 +2595,13 @@
             this._syncFab();
           },
 
-          restore: function (index) {
+          restore: async function (index) {
             const draft = this._pendingList?.[index];
             if (!draft || !draft.canvasData || !draft.settings) return;
+            if (!draft.draftSessionId) {
+              draft.draftSessionId = Utils.generateUniqueId();
+              await idbKeyval.set(this.storageKey, this._pendingList);
+            }
             App.ui.showLoading("正在恢复草稿...");
             App.io.loadProjectData(draft, { markUnsaved: true });
           },
@@ -11536,7 +11575,7 @@
             URL.revokeObjectURL(a.href);
             Utils.toast("项目已保存");
             App.state.hasUnsavedChanges = false;
-            App.draft.clear();
+            App.draft.clearCurrent();
             App.recent.add(fileName, snapshot, blob.size);
           },
 
@@ -11694,6 +11733,7 @@
                 App.dataSource.cancelBindingRefresh();
                 App.ui.hideLoading();
                 Utils.toast("项目加载成功");
+                App.draft.beginSession(data.draftSessionId || null);
                 App.draft.resume();
                 resolve();
               };
