@@ -79,26 +79,6 @@
         </div>
       </div>
     </div>
-    <div id="contactModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
-      <div class="bg-white rounded-xl shadow-2xl p-6 w-[320px] text-center relative transform transition-all scale-100">
-        <button
-          onclick="App.ui.hideModal('contactModal')"
-          class="absolute top-3 right-3 text-slate-400 hover:text-slate-600 w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 transition">
-          <i class="ph ph-x text-lg"></i>
-        </button>
-
-        <h3 class="text-lg font-bold text-slate-800 mb-1">联系开发者</h3>
-
-        <div class="bg-white p-2 rounded-xl border border-gray-100 shadow-inner inline-block mb-4">
-          <img src="./static/addme.jpg" alt="联系作者" class="w-48 h-48 object-contain rounded-lg" />
-        </div>
-
-        <div class="space-y-1">
-          <p class="text-sm font-medium text-slate-700">扫码添加微信</p>
-          <p class="text-sm text-slate-400">反馈建议 · 交流</p>
-        </div>
-      </div>
-    </div>
     <div id="permissionModal" class="hidden fixed inset-0 z-[70] flex items-center justify-center modal-backdrop transition-opacity duration-200">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[400px] text-center relative transform transition-all scale-100">
         <div class="w-14 h-14 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-orange-100">
@@ -805,9 +785,6 @@
           class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-red-50 hover:bg-red-100 text-red-600 border border-red-100 transition text-xs font-bold mr-1">
           <i class="ph ph-heart-straight text-lg"></i>
           <span>支持作者</span>
-        </button>
-        <button onclick="App.ui.showModal('contactModal')" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="联系作者">
-          <i class="ph ph-wechat-logo text-lg"></i>
         </button>
         <button onclick="App.ui.showHelp()" class="flex items-center gap-1 px-3 py-1.5 rounded hover:bg-gray-100 text-md font-medium transition text-gray-600" title="快捷键帮助">
           <i class="ph ph-keyboard text-lg"></i>
