@@ -1978,7 +1978,7 @@
             return null;
           },
 
-          _captureDiff: function (current, baseline, instance) {
+          _captureDiff: function (current, baseline, instance, previous) {
             const overrides = {
               props: {},
               content: {},
@@ -1990,6 +1990,8 @@
 
             const currentById = new Map((current.objects || []).map((obj) => [obj.id, obj]));
             const baselineById = new Map((baseline.objects || []).map((obj) => [obj.id, obj]));
+            // 上一次渲染/采集留下的画布快照：用于区分"用户手动修改"与"数据源刷新后的残留旧值"
+            const previousById = new Map((previous?.objects || []).map((obj) => [obj.id, obj]));
             baselineById.forEach((obj, id) => {
               if (!currentById.has(id)) {
                 const addedIndex = overrides.added.findIndex((item) => item.id === id);
@@ -2048,22 +2050,43 @@
               const baselineRaw = baselineObj.rawContent !== undefined ? baselineObj.rawContent : this._rawText(baselineObj);
               if (!this._same(currentRaw, baselineRaw)) {
                 const expected = this._expectedRaw(currentObj, instance);
-                if (expected === null || String(currentRaw) !== String(expected)) content.rawContent = currentRaw;
-                else delete content.rawContent;
+                const previousObj = previousById.get(id);
+                const previousRaw = previousObj
+                  ? previousObj.rawContent !== undefined
+                    ? previousObj.rawContent
+                    : this._rawText(previousObj)
+                  : undefined;
+                const previousOverride = instance.overrides?.content?.[id];
+                // 画布上的文本仍是刷新前的值时，差异来自数据源 / 模板变化，不能当作用户个性化内容固化下来
+                const stale = previousRaw !== undefined && String(previousRaw) === String(currentRaw);
+                const preserved =
+                  previousOverride &&
+                  previousOverride.rawContent !== undefined &&
+                  String(previousOverride.rawContent) === String(currentRaw);
+                if ((expected !== null && String(currentRaw) === String(expected)) || (stale && !preserved)) {
+                  delete content.rawContent;
+                } else {
+                  content.rawContent = currentRaw;
+                }
               }
 
               if (currentObj.tableData?.cells && baselineObj.tableData?.cells) {
                 const cells = content.cells || {};
+                const previousCells = previousById.get(id)?.tableData?.cells;
+                const previousCellOverrides = instance.overrides?.content?.[id]?.cells || {};
                 currentObj.tableData.cells.forEach((row, rowIndex) => {
                   row.forEach((cell, colIndex) => {
+                    const key = `${rowIndex}:${colIndex}`;
                     const baseCell = baselineObj.tableData.cells?.[rowIndex]?.[colIndex];
                     if (!cell || !baseCell || cell.text === baseCell.text) return;
                     const expected = cell.dataBinding?.type === "variable"
                       ? this._fieldValue(cell.dataBinding.sheet || instance.source?.sheet, instance.source?.rowIndex || 0, cell.dataBinding.field)
                       : null;
-                    if (expected === null || String(cell.text) !== String(expected)) {
-                      cells[`${rowIndex}:${colIndex}`] = { text: cell.text };
-                    }
+                    if (expected !== null && String(cell.text) === String(expected)) return;
+                    const staleCell = String(previousCells?.[rowIndex]?.[colIndex]?.text) === String(cell.text);
+                    const preservedCell = previousCellOverrides[key]?.text !== undefined && String(previousCellOverrides[key].text) === String(cell.text);
+                    if (staleCell && !preservedCell) return;
+                    cells[key] = { text: cell.text };
                   });
                 });
                 if (Object.keys(cells).length) content.cells = cells;
@@ -2089,6 +2112,26 @@
             );
           },
 
+          contentOverrideOf: function (obj) {
+            if (!obj) return null;
+            const instance = this.state.instances.find((item) => item.id === this.state.activeInstanceId);
+            if (!instance) return null;
+            const id = obj.templateObjectId || obj.id;
+            if (!id) return null;
+            return instance.overrides?.content?.[id] || null;
+          },
+
+          // 被单独改过内容的元素不再跟随数据源刷新
+          isContentLocked: function (obj) {
+            const override = this.contentOverrideOf(obj);
+            return !!override && override.rawContent !== undefined;
+          },
+
+          cellOverridesOf: function (obj) {
+            const cells = this.contentOverrideOf(obj)?.cells || {};
+            return new Set(Object.keys(cells).filter((key) => cells[key]?.text !== undefined));
+          },
+
           captureActive: function () {
             if (this._loading || App.history.locked) return;
             if (App.state.paperType === "label" && App.state.label.mode === "preview") return;
@@ -2100,7 +2143,7 @@
               overrides: { props: {}, content: {}, binding: {}, added: [], removedIds: [], order: [] },
             };
             const defaultCanvas = this.resolveInstance(defaultInstance);
-            instance.overrides = this._captureDiff(current, defaultCanvas, instance);
+            instance.overrides = this._captureDiff(current, defaultCanvas, instance, instance._baseline);
             instance._baseline = current;
             this.updateUI();
           },
@@ -3803,7 +3846,11 @@
               }
 
 	              App.batch.invalidate();
-	              await this.renderPage(App.batch._restoreInstanceId ? App.state.batch.activePageIndex || 0 : 0);
+              if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+                await App.label.renderPreview();
+              } else {
+                await this.renderPage(App.batch._restoreInstanceId ? App.state.batch.activePageIndex || 0 : 0);
+              }
               this.updateNavUI();
             } catch (e) {
               console.error(e);
@@ -3874,6 +3921,11 @@
 	            App.batch.invalidate();
             this.updateUI();
             this.updateNavUI();
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              App.label.renderPreview();
+            } else {
+              this.renderPage(0);
+            }
             App.draft.schedule();
           },
 
@@ -4282,12 +4334,7 @@
             const max = this.calculateTotalPages();
             pageIndex = Math.max(0, Math.min(pageIndex, max - 1));
             if (max === 0) pageIndex = 0;
-	            if (await App.batch.activatePage(pageIndex, { totalPages: max })) {
-	              this.updateNavUI();
-	              return;
-	            }
-            App.state.currentDataIndex = pageIndex;
-            // 虚拟页展开：同一数据行的 N 份共用行数据，仅份数序号不同
+	            // 虚拟页展开：同一数据行的 N 份共用行数据，仅份数序号不同
             const virt = this._virtualEnabled() ? this._resolveVirtual(pageIndex) : { rowIndex: pageIndex, copyIndex: 0, copies: 1 };
             const rowIndex = virt.rowIndex;
             if (!this._sheetCache) this._sheetCache = {};
@@ -4320,10 +4367,33 @@
               });
             }
 
-            const objs = App.canvas.getObjects();
+            if (await App.batch.activatePage(pageIndex, { totalPages: max })) {
+              // 批量模式下实例已切换，但绑定元素仍需按最新数据源刷新（单独改过内容的除外）
+              await this._applyRowContent({ rowIndex, pageIndex, totalPages: max, virt, respectOverrides: true });
+              App.canvas.requestRenderAll();
+              this.updateNavUI();
+              return;
+            }
+            App.state.currentDataIndex = pageIndex;
+            await this._applyRowContent({ rowIndex, pageIndex, totalPages: max, virt, respectOverrides: false });
+            App.canvas.requestRenderAll();
+            this.updateNavUI();
+          },
+
+          // 把画布上的动态元素同步到当前数据行的最新取值
+          _applyRowContent: async function (opts) {
+            const rowIndex = opts?.rowIndex || 0;
+            const pageIndex = opts?.pageIndex || 0;
+            const totalPages = opts?.totalPages || 1;
+            const virt = opts?.virt || { copyIndex: 0, copies: 1 };
+            const respectOverrides = !!opts?.respectOverrides;
             const updateTasks = [];
-            for (const obj of objs) {
-              if (obj.type === "image" && obj.dataBinding && obj.dataBinding.type === "variable") {
+            const objs = App.canvas.getObjects();
+            // 按数据源刷新不该进入撤销栈，也不该被当作本期编辑采集进实例覆盖
+            const wasLocked = App.history.locked;
+            App.history.locked = true;
+            try {
+              for (const obj of objs) {
                 if (obj.type === "image" && obj.dataBinding && obj.dataBinding.type === "variable") {
                   const originalSheet = obj.dataBinding.sheet;
                   const filename = this._getBoundValue(obj, rowIndex);
@@ -4336,54 +4406,56 @@
                   }
                   continue;
                 }
-              }
 
-              if (obj.isTable && obj.tableData) {
-                this._updateTableData(obj, rowIndex);
-                continue;
-              }
+                if (obj.isTable && obj.tableData) {
+                  this._updateTableData(obj, rowIndex, respectOverrides ? App.batch.cellOverridesOf(obj) : null);
+                  continue;
+                }
 
-              let newRaw = null;
-              let hasNewData = false;
-              if (obj.isDynamicPageNum && obj.pageConfig) {
-                newRaw = this._formatPageNum(obj.pageConfig, {
-                  page: pageIndex,
-                  total: max || 1,
-                  copy: virt.copyIndex,
-                  copies: virt.copies,
-                });
-                hasNewData = true;
-              } else if (obj.isSerialNumber && obj.serialConfig) {
-                newRaw = App.tools._formatSerialNumber(obj.serialConfig, rowIndex);
-                hasNewData = true;
-              } else if (obj.isDynamicDate && obj.dateConfig) {
-                newRaw = Utils.formatDate(new Date(), null, obj.dateConfig);
-                hasNewData = true;
-              } else if (obj.dataBinding?.type === "variable") {
-                const val = this._getBoundValue(obj, rowIndex);
-                if (val !== null) {
-                  newRaw = String(val);
+                // 单独改过内容的元素保留用户填写的值，不跟随数据源刷新
+                if (respectOverrides && App.batch.isContentLocked(obj)) continue;
+
+                let newRaw = null;
+                let hasNewData = false;
+                if (obj.isDynamicPageNum && obj.pageConfig) {
+                  newRaw = this._formatPageNum(obj.pageConfig, {
+                    page: pageIndex,
+                    total: totalPages || 1,
+                    copy: virt.copyIndex,
+                    copies: virt.copies,
+                  });
                   hasNewData = true;
+                } else if (obj.isSerialNumber && obj.serialConfig) {
+                  newRaw = App.tools._formatSerialNumber(obj.serialConfig, rowIndex);
+                  hasNewData = true;
+                } else if (obj.isDynamicDate && obj.dateConfig) {
+                  newRaw = Utils.formatDate(new Date(), null, obj.dateConfig);
+                  hasNewData = true;
+                } else if (obj.dataBinding?.type === "variable") {
+                  const val = this._getBoundValue(obj, rowIndex);
+                  if (val !== null) {
+                    newRaw = String(val);
+                    hasNewData = true;
+                  }
+                }
+
+                if (hasNewData) {
+                  obj.rawContent = newRaw;
+                  const task = App.content.render(obj);
+                  if (task instanceof Promise) {
+                    updateTasks.push(task);
+                  }
+                } else if (obj.syncMode === "ref") {
+                  App.content.render(obj);
                 }
               }
 
-              if (hasNewData) {
-                obj.rawContent = newRaw;
-                const task = App.content.render(obj);
-                if (task instanceof Promise) {
-                  updateTasks.push(task);
-                }
-              } else if (obj.syncMode === "ref") {
-                App.content.render(obj);
+              if (updateTasks.length > 0) {
+                await Promise.all(updateTasks);
               }
+            } finally {
+              App.history.locked = wasLocked;
             }
-
-            if (updateTasks.length > 0) {
-              await Promise.all(updateTasks);
-            }
-
-            App.canvas.requestRenderAll();
-            this.updateNavUI();
           },
 
           _getBoundValue: function (obj, pageIndex) {
@@ -4410,11 +4482,13 @@
             return val !== undefined && val !== null ? String(val) : "";
           },
 
-          _updateTableData: function (tableObj, pageIndex) {
+          _updateTableData: function (tableObj, pageIndex, skipCells) {
             if (!tableObj.tableData || !tableObj.tableData.cells) return false;
             let tableChanged = false;
-            tableObj.tableData.cells.forEach((row) => {
-              row.forEach((cell) => {
+            tableObj.tableData.cells.forEach((row, rowIndex) => {
+              row.forEach((cell, colIndex) => {
+                // 被单独改过的单元格保留用户内容
+                if (skipCells && skipCells.has(`${rowIndex}:${colIndex}`)) return;
                 const mockObj = { dataBinding: cell.dataBinding };
                 const val = this._getBoundValue(mockObj, pageIndex);
                 if (val !== null) {
