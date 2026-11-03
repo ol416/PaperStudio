@@ -404,6 +404,7 @@
             currentDataIndex: 0,
             copyField: "",
             identityField: "",
+            printRows: null,
             imgDirHandle: null,
             imgDirId: null,
             isRequestingPerm: false,
@@ -2340,16 +2341,9 @@
 	                const y = cfg.marginTop + row * (labelH + gapV);
 	                if (point.x < x || point.x > x + labelW || point.y < y || point.y > y + labelH) continue;
 	                const globalIndex = (App.state.label.previewPage || 0) * Math.max(1, cfg.labelCols * cfg.labelRows) + row * cfg.labelCols + col;
-	                let dataIndex = globalIndex;
-	                let copyIndex = globalIndex % Math.max(1, cfg.labelQuantity);
-	                if (App.dataSource._virtualEnabled()) {
-	                  const virt = App.dataSource._resolveVirtual(globalIndex);
-	                  dataIndex = virt.rowIndex;
-	                  copyIndex = virt.copyIndex;
-	                } else if (App.state.dataSource.isActive && App.state.dataSource.data.length) {
-	                  dataIndex = Math.floor(globalIndex / Math.max(1, cfg.labelQuantity));
-	                }
-	                const instance = this.instanceForLabel(dataIndex, copyIndex, App.state.label.previewPage || 0, App.dataSource.calculateTotalPages());
+	                const item = App.dataSource.getLabelItems()[globalIndex];
+	                if (!item) continue;
+	                const instance = this.instanceForLabel(item.rowIndex, item.copyIndex, App.state.label.previewPage || 0, App.dataSource.calculateTotalPages());
 	                obj.batchInstanceId = instance.id;
 	                obj.templateObjectId = obj.id || this._newId();
 	                obj.id = obj.templateObjectId;
@@ -2909,13 +2903,13 @@
           // 与打印/导出实际页数保持一致：标签在设计模式下会先进入预览再批量输出
           _estimatePages: function () {
             if (App.state.paperType === "label" && App.state.label.mode === "design") {
-              const ds = App.state.dataSource;
               const cfg = App.paper.getSettings();
               const items = App.dataSource._totalCopiesOf();
               const perPage = Math.max(1, (cfg.labelCols || 1) * (cfg.labelRows || 1));
               return Math.max(1, Math.ceil(items / perPage));
             }
-            return App.dataSource.calculateTotalPages();
+            if (App.state.printCurrentOnly) return 1;
+            return Math.max(1, App.dataSource.getOutputPageIndices().length);
           },
 
           _collectMeta: function () {
@@ -2931,9 +2925,12 @@
               height: h,
               pages: App.state.printCurrentOnly ? 1 : total,
               totalPages: total,
-              copies: App.dataSource._virtualEnabled()
-                ? App.dataSource._rebuildVirtualMap().length
-                : Math.max(1, s.labelQuantity || 1),
+              copies: (() => {
+                if (!App.dataSource._virtualEnabled()) return Math.max(1, s.labelQuantity || 1);
+                const map = App.dataSource._rebuildVirtualMap();
+                const keep = App.dataSource.getPrintRowSet();
+                return keep ? map.filter((item) => keep.has(item.rowIndex)).length : map.length;
+              })(),
               currentOnly: !!App.state.printCurrentOnly,
               dataSource:
                 ds && ds.isActive
@@ -3757,6 +3754,7 @@
           },
 
           loadFromHandle: async function (handle, handleId) {
+            this.closePrintRows();
             let perm = await handle.queryPermission({
               mode: "read",
             });
@@ -3865,6 +3863,7 @@
           processCurrentSheet: function (skipRender = false) {
             const s = App.state.dataSource;
             if (!s.isActive || !s.workbook) return;
+            s.printRows = null;
             const worksheet = s.workbook.Sheets[s.currentSheet];
             const jsonHeader = XLSX.utils.sheet_to_json(worksheet, {
               header: 1,
@@ -3900,6 +3899,7 @@
 	            App.batch.invalidate();
             s.currentSheet = sheetName;
             s.copyField = "";
+            s.printRows = null;
             this._invalidateVirtual();
             if (s.isActive && s.workbook) {
               const worksheet = s.workbook.Sheets[sheetName];
@@ -4030,15 +4030,318 @@
             return { rowIndex: pageIndex, copyIndex: 0, copies: 1 };
           },
 
-          _totalCopiesOf: function () {
+          // 标签预览/打印按"标签个数"展开，这里把数据行与份数展开成有序标签项，
+          // 并在选择了打印记录时只保留勾选的数据行。
+          getLabelItems: function () {
             const s = App.state.dataSource;
             const cfg = App.paper.getSettings();
-            if (this._virtualEnabled()) return this._rebuildVirtualMap().length;
-            if (App.state.paperType === "label") {
-              const base = s.isActive && s.data.length > 0 ? s.data.length : 1;
-              return base * Math.max(1, cfg.labelQuantity || 1);
+            const perRowCopies = Math.max(1, cfg.labelQuantity || 1);
+            const items = [];
+            if (this._virtualEnabled()) {
+              this._rebuildVirtualMap().forEach((v) => {
+                items.push({ rowIndex: v.rowIndex, copyIndex: v.copyIndex, copies: v.copies });
+              });
+            } else {
+              const hasData = s.isActive && s.data.length > 0;
+              const count = hasData ? s.data.length : 1;
+              for (let r = 0; r < count; r++) {
+                for (let c = 0; c < perRowCopies; c++) {
+                  items.push({
+                    rowIndex: hasData ? r : r * perRowCopies + c,
+                    copyIndex: c,
+                    copies: perRowCopies,
+                  });
+                }
+              }
             }
-            return s.isActive && s.data.length > 0 ? s.data.length : 1;
+            const keep = this.getPrintRowSet();
+            return keep ? items.filter((item) => keep.has(item.rowIndex)) : items;
+          },
+
+          _totalCopiesOf: function () {
+            return Math.max(1, this.getLabelItems().length);
+          },
+
+          // ===== 打印记录选择：批量打印/导出时只输出勾选的数据行 =====
+          getPrintRows: function () {
+            const s = App.state.dataSource;
+            if (!s.isActive || !Array.isArray(s.data) || s.data.length === 0) return null;
+            if (!Array.isArray(s.printRows) || s.printRows.length === 0) return null;
+            const last = s.data.length - 1;
+            const rows = Array.from(new Set(s.printRows.filter((n) => Number.isInteger(n) && n >= 0 && n <= last))).sort((a, b) => a - b);
+            if (rows.length === 0 || rows.length >= s.data.length) return null;
+            return rows;
+          },
+
+          getPrintRowSet: function () {
+            const rows = this.getPrintRows();
+            return rows ? new Set(rows) : null;
+          },
+
+          setPrintRows: function (rows) {
+            const s = App.state.dataSource;
+            const total = Array.isArray(s.data) ? s.data.length : 0;
+            if (!Array.isArray(rows) || rows.length === 0 || rows.length >= total) {
+              s.printRows = null;
+            } else {
+              const valid = Array.from(new Set(rows.filter((n) => Number.isInteger(n) && n >= 0 && n < total))).sort((a, b) => a - b);
+              s.printRows = valid.length ? valid : null;
+            }
+            // 记录选择本身就是输出范围：避免“仅当前页”残留导致只打印当前页
+            App.state.printCurrentOnly = false;
+            const currentOnly = document.getElementById("checkOnlyCurrentPage");
+            if (currentOnly) currentOnly.checked = false;
+            this.updateNavUI();
+            this.syncPrintRowsView();
+            App.draft.schedule();
+          },
+
+          // 选择记录只影响批量输出，编辑中的当前页不需要重绘；
+          // 标签预览把多个记录排在一张纸上，需要重新排版。
+          syncPrintRowsView: function () {
+            if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              App.label.renderPreview();
+            }
+          },
+
+          // 批量输出实际要渲染的物理页号；null 记录选择表示全部页。
+          getOutputPageIndices: function () {
+            const totalPages = this.calculateTotalPages();
+            const maxIndex = Math.max(0, totalPages - 1);
+            const current = Math.max(0, Math.min(App.state.currentDataIndex || 0, maxIndex));
+            const isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
+            if (App.state.printCurrentOnly) {
+              if (isLabelPreview) return [Math.max(0, Math.min(App.state.label.previewPage || 0, maxIndex))];
+              return [current];
+            }
+            const keep = this.getPrintRowSet();
+            if (!keep) return Array.from({ length: totalPages }, (_, i) => i);
+            if (isLabelPreview) {
+              // 标签预览的页数已按所选记录重算，页号直接连续输出
+              return Array.from({ length: totalPages }, (_, i) => i);
+            }
+            const pages = [];
+            if (this._virtualEnabled()) {
+              const map = this._rebuildVirtualMap();
+              for (let i = 0; i < Math.min(map.length, totalPages); i++) {
+                if (keep.has(map[i].rowIndex)) pages.push(i);
+              }
+            } else {
+              for (let i = 0; i < totalPages; i++) {
+                if (keep.has(i)) pages.push(i);
+              }
+            }
+            return pages.length ? pages : [current];
+          },
+
+          _pickerRows: null,
+          _pickerFilter: "",
+          _pickerFilterTimer: null,
+
+          openPrintRows: function () {
+            const s = App.state.dataSource;
+            if (!s.isActive || s.data.length === 0) return Utils.toast("请先导入数据文件", "error");
+            this.closePrintRows();
+            const picked = this.getPrintRows();
+            this._pickerRows = new Set(picked || s.data.map((_, i) => i));
+            this._pickerFilter = "";
+            const search = document.getElementById("printRowsSearch");
+            if (search) search.value = "";
+            const from = document.getElementById("printRowsFrom");
+            const to = document.getElementById("printRowsTo");
+            if (from) from.value = 1;
+            if (to) to.value = s.data.length;
+            this.renderPrintRows();
+            const modal = document.getElementById("printRowsModal");
+            if (modal) {
+              modal.classList.remove("hidden");
+              modal.classList.add("flex");
+            }
+          },
+
+          closePrintRows: function () {
+            clearTimeout(this._pickerFilterTimer);
+            this._pickerFilterTimer = null;
+            this._pickerRows = null;
+            this._pickerFilter = "";
+            const modal = document.getElementById("printRowsModal");
+            if (modal) {
+              modal.classList.add("hidden");
+              modal.classList.remove("flex");
+            }
+          },
+
+          filterPrintRows: function (value) {
+            clearTimeout(this._pickerFilterTimer);
+            this._pickerFilterTimer = setTimeout(() => {
+              this._pickerFilter = String(value || "").trim().toLowerCase();
+              this.renderPrintRows();
+            }, 150);
+          },
+
+          _printRowMatches: function (row) {
+            const filter = this._pickerFilter;
+            if (!filter) return true;
+            const headers = App.state.dataSource.headers;
+            for (let i = 0; i < headers.length; i++) {
+              const header = headers[i];
+              if (!header) continue;
+              const value = row[header];
+              if (value !== undefined && value !== null && String(value).toLowerCase().includes(filter)) return true;
+            }
+            return false;
+          },
+
+          _printRowCaption: function (row) {
+            const headers = App.state.dataSource.headers;
+            const parts = [];
+            for (let i = 0; i < headers.length; i++) {
+              const header = headers[i];
+              if (!header) continue;
+              const value = row[header];
+              let text = value === undefined || value === null ? "" : String(value);
+              if (!text.trim()) continue;
+              if (text.length > 60) text = text.slice(0, 60) + "…";
+              parts.push(`${header}：${text}`);
+              if (parts.length >= 4) break;
+            }
+            return parts.join("　");
+          },
+
+          renderPrintRows: function () {
+            const s = App.state.dataSource;
+            const list = document.getElementById("printRowsList");
+            if (!list || !this._pickerRows) return;
+            const matched = [];
+            for (let i = 0; i < s.data.length; i++) {
+              if (this._printRowMatches(s.data[i])) matched.push(i);
+            }
+            const limit = 500;
+            const frag = document.createDocumentFragment();
+            const currentRow = App.dataSource._currentVirtual().rowIndex;
+            matched.slice(0, limit).forEach((rowIndex) => {
+              const label = document.createElement("label");
+              label.className = "flex items-center gap-3 px-2 py-1.5 rounded-lg hover:bg-red-50/60 cursor-pointer border border-transparent select-none";
+              const input = document.createElement("input");
+              input.type = "checkbox";
+              input.className = "accent-red-600 rounded scale-90 shrink-0";
+              input.checked = this._pickerRows.has(rowIndex);
+              input.addEventListener("change", () => {
+                if (!this._pickerRows) return;
+                if (input.checked) this._pickerRows.add(rowIndex);
+                else this._pickerRows.delete(rowIndex);
+                this.updatePrintRowsStats();
+              });
+              const num = document.createElement("span");
+              num.className = "w-10 text-right font-mono text-[11px] text-slate-400 shrink-0";
+              num.innerText = rowIndex + 1;
+              const caption = document.createElement("span");
+              caption.className = "truncate text-xs text-slate-600 flex-1";
+              caption.innerText = this._printRowCaption(s.data[rowIndex]) || "（空行）";
+              label.append(input, num, caption);
+              if (rowIndex === currentRow) {
+                const tag = document.createElement("span");
+                tag.className = "text-[10px] text-red-500 bg-red-50 border border-red-100 rounded px-1.5 py-0.5 shrink-0";
+                tag.innerText = "当前页";
+                label.appendChild(tag);
+              }
+              frag.appendChild(label);
+            });
+            list.innerHTML = "";
+            if (matched.length === 0) {
+              const empty = document.createElement("div");
+              empty.className = "py-10 text-center text-xs text-slate-400";
+              empty.innerText = "没有匹配的记录";
+              list.appendChild(empty);
+            } else {
+              list.appendChild(frag);
+              if (matched.length > limit) {
+                const note = document.createElement("div");
+                note.className = "py-3 text-center text-[11px] text-slate-400";
+                note.innerText = `仅显示前 ${limit} 条匹配记录，可用搜索或“快速范围”定位其它行。`;
+                list.appendChild(note);
+              }
+            }
+            this.updatePrintRowsStats();
+          },
+
+          updatePrintRowsStats: function () {
+            const stats = document.getElementById("printRowsStats");
+            if (!stats || !this._pickerRows) return;
+            const total = App.state.dataSource.data.length;
+            const count = this._pickerRows.size;
+            stats.innerText = `已选 ${count} / 共 ${total} 条`;
+            stats.classList.toggle("text-slate-500", count === total);
+            stats.classList.toggle("text-red-600", count !== total);
+            stats.classList.toggle("font-bold", count !== total);
+          },
+
+          pickAllPrintRows: function (checked) {
+            if (!this._pickerRows) return;
+            const s = App.state.dataSource;
+            if (!checked) {
+              this._pickerRows.clear();
+            } else {
+              for (let i = 0; i < s.data.length; i++) {
+                if (this._printRowMatches(s.data[i])) this._pickerRows.add(i);
+              }
+            }
+            this.renderPrintRows();
+          },
+
+          invertPrintRows: function () {
+            if (!this._pickerRows) return;
+            const s = App.state.dataSource;
+            for (let i = 0; i < s.data.length; i++) {
+              if (!this._printRowMatches(s.data[i])) continue;
+              if (this._pickerRows.has(i)) this._pickerRows.delete(i);
+              else this._pickerRows.add(i);
+            }
+            this.renderPrintRows();
+          },
+
+          pickRangePrintRows: function () {
+            if (!this._pickerRows) return;
+            const total = App.state.dataSource.data.length;
+            let from = parseInt(document.getElementById("printRowsFrom")?.value, 10);
+            let to = parseInt(document.getElementById("printRowsTo")?.value, 10);
+            if (!Number.isFinite(from)) from = 1;
+            if (!Number.isFinite(to)) to = total;
+            from = Math.max(1, Math.min(from, total));
+            to = Math.max(1, Math.min(to, total));
+            if (from > to) [from, to] = [to, from];
+            let added = 0;
+            for (let i = from - 1; i <= to - 1; i++) {
+              if (!this._pickerRows.has(i)) {
+                this._pickerRows.add(i);
+                added++;
+              }
+            }
+            this.renderPrintRows();
+            Utils.toast(added > 0 ? `已加入第 ${from}–${to} 条` : `第 ${from}–${to} 条已在选择中`, "info");
+          },
+
+          applyPrintRows: function () {
+            if (!this._pickerRows || this._pickerRows.size === 0) return Utils.toast("请至少勾选一条记录", "error");
+            const total = App.state.dataSource.data.length;
+            const all = this._pickerRows.size >= total;
+            const rows = all ? null : Array.from(this._pickerRows).sort((a, b) => a - b);
+            this.setPrintRows(rows);
+            this.closePrintRows();
+            Utils.toast(all ? "已恢复打印全部记录" : `已选 ${rows.length} 条记录，打印 / 导出时只输出这些行`);
+          },
+
+          resetPrintRows: function () {
+            this.closePrintRows();
+            if (!App.state.dataSource.printRows) {
+              this.updateNavUI();
+              return;
+            }
+            App.state.dataSource.printRows = null;
+            this.updateNavUI();
+            this.syncPrintRowsView();
+            App.draft.schedule();
+            Utils.toast("已恢复打印全部记录");
           },
 
           calculateTotalPages: function () {
@@ -4105,6 +4408,7 @@
 	              await App.batch.deactivate();
 	              App.batch.reset();
 	            }
+            this.closePrintRows();
             const copyField = opts.preserveCopyField ? App.state.dataSource.copyField || "" : "";
             App.state.dataSource = {
               fileHandle: null,
@@ -4117,6 +4421,7 @@
               headers: [],
               isActive: false,
               copyField,
+              printRows: null,
 	              identityField: opts.preserveBatch ? App.batch.state.identity.field || "" : "",
             };
             this._invalidateVirtual();
@@ -4629,18 +4934,24 @@
 
           updateNavUI: function () {
             const max = this.calculateTotalPages();
+            const isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
             let current = App.state.currentDataIndex;
-            if (current >= max) {
-              current = max - 1;
-              App.state.currentDataIndex = current;
+            if (isLabelPreview) {
+              // 标签预览以纸页为导航单位，过滤记录后不要改写当前数据行
+              App.state.label.previewPage = Math.max(0, Math.min(App.state.label.previewPage || 0, max - 1));
+            } else {
+              if (current >= max) {
+                current = max - 1;
+                App.state.currentDataIndex = current;
+              }
+              if (current < 0) current = 0;
             }
-            if (current < 0) current = 0;
             const navBar = document.getElementById("dataNavBar");
             const input = document.getElementById("vdpIndexInput");
             const total = document.getElementById("vdpTotal");
             if (max > 1) {
               navBar.classList.remove("hidden");
-              if (App.state.paperType === "label" && App.state.label.mode === "preview") {
+              if (isLabelPreview) {
                 input.value = (App.state.label.previewPage || 0) + 1;
               } else {
                 input.value = current + 1;
@@ -4649,6 +4960,22 @@
             } else {
               navBar.classList.add("hidden");
             }
+
+            const ds = App.state.dataSource;
+            const rowsBtn = document.getElementById("printRowsBtn");
+            const rowsClear = document.getElementById("printRowsClearBtn");
+            const rowsLabel = document.getElementById("printRowsBtnLabel");
+            const showRowsBtn = ds.isActive && Array.isArray(ds.data) && ds.data.length > 1;
+            const selectedRows = this.getPrintRows();
+            if (rowsBtn) {
+              rowsBtn.classList.toggle("hidden", !showRowsBtn);
+              rowsBtn.classList.toggle("flex", showRowsBtn);
+              ["border-slate-200", "bg-white", "text-slate-600"].forEach((cls) => rowsBtn.classList.toggle(cls, !selectedRows));
+              ["border-red-200", "bg-red-50", "text-red-600"].forEach((cls) => rowsBtn.classList.toggle(cls, !!selectedRows));
+              rowsBtn.title = selectedRows ? `当前只输出已选的 ${selectedRows.length} 条记录，点击修改` : "选择要批量打印 / 导出的数据记录（行）";
+            }
+            if (rowsLabel) rowsLabel.innerText = selectedRows ? `已选 ${selectedRows.length} 条` : "全部记录";
+            if (rowsClear) rowsClear.classList.toggle("hidden", !selectedRows);
 	            App.batch.updateUI();
           },
 
@@ -6550,6 +6877,12 @@
             bindModalClose("sponsorModal");
             bindModalClose("pngExportModal");
             bindModalClose("findReplaceModal");
+            const printRowsModal = document.getElementById("printRowsModal");
+            if (printRowsModal) {
+              printRowsModal.addEventListener("click", (e) => {
+                if (e.target === printRowsModal) App.dataSource.closePrintRows();
+              });
+            }
             document.addEventListener("fullscreenchange", () => {
               const icon = document.getElementById("fsIcon");
               if (icon) {
@@ -6619,6 +6952,11 @@
               }
             });
             hotkeys("esc", (e) => {
+              if (!document.getElementById("printRowsModal")?.classList.contains("hidden")) {
+                e.preventDefault();
+                App.dataSource.closePrintRows();
+                return;
+              }
               if (App.formatPainter.isActive()) {
                 e.preventDefault();
                 App.formatPainter.exit();
@@ -11423,48 +11761,45 @@
             await Promise.all(updateTasks);
             App.canvas.requestRenderAll();
 
-            const isLabelDesign = App.state.paperType === "label" && App.state.label.mode === "design";
-            const isLabelPreview = App.state.paperType === "label" && App.state.label.mode === "preview";
-            if (isLabelDesign) {
+            const wasLabelDesign = App.state.paperType === "label" && App.state.label.mode === "design";
+            if (wasLabelDesign) {
               App.label.enterPreview();
               await new Promise((r) => setTimeout(r, 100));
             }
+            const isLabelLayout = App.state.paperType === "label" && (wasLabelDesign || App.state.label.mode === "preview");
 
-            const totalPages = App.dataSource.calculateTotalPages();
-            const shouldBatch = totalPages > 1 && !App.state.printCurrentOnly;
+            // 只渲染实际要输出的页：受“仅当前页”和“打印记录”选择影响
+            const pageIndices = App.dataSource.getOutputPageIndices();
             const originalIndex = App.state.currentDataIndex;
             const originalLabelPage = App.state.label.previewPage || 0;
-            const loopCount = shouldBatch ? totalPages : 1;
+            const shouldRenderCurrent = !isLabelLayout && (pageIndices.length > 1 || pageIndices[0] !== originalIndex);
             const { w, h } = App.state.currentPaper;
             const results = [];
             try {
-              for (let i = 0; i < loopCount; i++) {
-                if (shouldBatch) {
-                  if (isLabelPreview || isLabelDesign) {
-                    App.state.label.previewPage = i;
-                    await App.label.renderPreview();
-                  } else {
-                    await App.dataSource.renderPage(i);
-                  }
-                } else if (isLabelPreview) {
+              for (let i = 0; i < pageIndices.length; i++) {
+                const pageIndex = pageIndices[i];
+                if (isLabelLayout) {
+                  App.state.label.previewPage = pageIndex;
                   await App.label.renderPreview();
+                } else if (shouldRenderCurrent) {
+                  await App.dataSource.renderPage(pageIndex);
                 }
 
                 // 该页渲染完成后立刻采集内容索引，整批输出都能被检索到
                 App.printHistory.captureCurrentCanvas();
 
-                const result = await cb(i, loopCount, { w, h });
+                const result = await cb(i, pageIndices.length, { w, h });
                 if (result !== undefined) results.push(result);
               }
               return results;
             } finally {
-              if (shouldBatch) {
-                if (isLabelPreview || isLabelDesign) {
+              if (isLabelLayout) {
+                if (App.state.label.previewPage !== originalLabelPage) {
                   App.state.label.previewPage = originalLabelPage;
                   await App.label.renderPreview();
-                } else {
-                  await App.dataSource.renderPage(originalIndex);
                 }
+              } else if (shouldRenderCurrent) {
+                await App.dataSource.renderPage(originalIndex);
               }
             }
           },
@@ -12198,19 +12533,12 @@
               const gapV = Utils.mm2px(cfg.labelGapV);
               const startX = cfg.marginLeft;
               const startY = cfg.marginTop;
-              const ds = App.state.dataSource;
-              const useVirtual = App.dataSource._virtualEnabled();
-              let totalLabelCount = 0;
-              if (useVirtual) {
-                totalLabelCount = App.dataSource._rebuildVirtualMap().length;
-              } else if (ds.isActive && ds.data.length > 0) {
-                totalLabelCount = ds.data.length * cfg.labelQuantity;
-              } else {
-                totalLabelCount = cfg.labelQuantity;
-              }
+              // 已按“打印记录”选择过滤；未选择时与原展开顺序一致
+              const labelItems = App.dataSource.getLabelItems();
+              const totalLabelCount = labelItems.length;
 
               const itemsPerPage = Math.max(1, cfg.labelCols * cfg.labelRows);
-              const totalPages = Math.ceil(totalLabelCount / itemsPerPage);
+              const totalPages = Math.max(1, Math.ceil(totalLabelCount / itemsPerPage));
               if (typeof App.state.label.previewPage === "undefined") App.state.label.previewPage = 0;
               let currentPage = App.state.label.previewPage;
               if (currentPage >= totalPages) currentPage = Math.max(0, totalPages - 1);
@@ -12223,16 +12551,11 @@
                   if (globalIndex >= totalLabelCount) break;
                   const currentX = startX + c * (labelW + gapH);
                   const currentY = startY + r * (labelH + gapV);
-                  let dataIndex = globalIndex;
-                  let copyInfo = { copyIndex: globalIndex % Math.max(1, cfg.labelQuantity), copies: Math.max(1, cfg.labelQuantity) };
-                  if (useVirtual) {
-                    const virt = App.dataSource._resolveVirtual(globalIndex);
-                    dataIndex = virt.rowIndex;
-                    copyInfo = { copyIndex: virt.copyIndex, copies: virt.copies };
-                  } else if (ds.isActive && ds.data.length > 0) {
-                    dataIndex = Math.floor(globalIndex / Math.max(1, cfg.labelQuantity));
-                  }
-                  await this._cloneDesignTo(designJSON, currentX, currentY, dataIndex, currentPage, totalPages, copyInfo);
+                  const item = labelItems[globalIndex] || { rowIndex: globalIndex, copyIndex: 0, copies: 1 };
+                  await this._cloneDesignTo(designJSON, currentX, currentY, item.rowIndex, currentPage, totalPages, {
+                    copyIndex: item.copyIndex,
+                    copies: item.copies,
+                  });
                   drawnCount++;
                 }
               }

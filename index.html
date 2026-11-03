@@ -505,6 +505,75 @@
       </div>
     </div>
 
+    <div id="printRowsModal" class="hidden fixed inset-0 z-[70] items-center justify-center modal-backdrop">
+      <div class="bg-white w-[760px] max-w-[94vw] h-[82vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+        <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0 bg-white">
+          <div>
+            <h3 class="text-lg font-bold text-slate-800 flex items-center gap-2"><i class="ph ph-list-checks text-red-600"></i> 选择打印记录</h3>
+            <p class="text-xs text-slate-400 mt-0.5">勾选需要批量打印 / 导出的数据行；未勾选的行不会输出，默认输出全部记录。</p>
+          </div>
+          <button onclick="App.dataSource.closePrintRows()" class="p-2 rounded-full hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition">
+            <i class="ph ph-x text-xl"></i>
+          </button>
+        </div>
+
+        <div class="px-6 py-3 border-b border-gray-100 bg-slate-50 flex items-center gap-2 shrink-0">
+          <div class="relative flex-1">
+            <i class="ph ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+            <input
+              id="printRowsSearch"
+              type="search"
+              autocomplete="off"
+              placeholder="搜索记录（匹配任意字段）"
+              oninput="App.dataSource.filterPrintRows(this.value)"
+              class="w-full pl-8 pr-2 py-1.5 text-xs border border-gray-300 rounded bg-white focus:outline-none focus:border-red-500" />
+          </div>
+          <button
+            onclick="App.dataSource.pickAllPrintRows(true)"
+            title="选中当前筛选结果（无筛选时为全部记录）"
+            class="px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-white border border-gray-300 rounded hover:border-red-300 hover:text-red-600 transition">
+            全选
+          </button>
+          <button
+            onclick="App.dataSource.pickAllPrintRows(false)"
+            title="清空所有勾选"
+            class="px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-white border border-gray-300 rounded hover:border-red-300 hover:text-red-600 transition">
+            清空
+          </button>
+          <button
+            onclick="App.dataSource.invertPrintRows()"
+            title="反选当前筛选结果"
+            class="px-2.5 py-1.5 text-xs font-medium text-slate-600 bg-white border border-gray-300 rounded hover:border-red-300 hover:text-red-600 transition">
+            反选
+          </button>
+        </div>
+
+        <div class="px-6 py-2 border-b border-gray-100 flex items-center gap-2 shrink-0 text-xs text-slate-500">
+          <span class="font-bold text-slate-400">快速范围</span>
+          <input id="printRowsFrom" type="number" min="1" placeholder="起" class="w-16 px-2 py-1 border border-gray-300 rounded text-center focus:outline-none focus:border-red-500" />
+          <span class="text-slate-300">-</span>
+          <input id="printRowsTo" type="number" min="1" placeholder="止" class="w-16 px-2 py-1 border border-gray-300 rounded text-center focus:outline-none focus:border-red-500" />
+          <button
+            onclick="App.dataSource.pickRangePrintRows()"
+            class="px-2.5 py-1 text-xs font-medium text-red-600 border border-red-200 bg-red-50 rounded hover:bg-red-100 transition">
+            加入选择
+          </button>
+          <span id="printRowsStats" class="ml-auto font-mono text-slate-500">已选 0 / 共 0 条</span>
+        </div>
+
+        <div id="printRowsList" class="flex-1 overflow-y-auto custom-scrollbar px-4 py-2"></div>
+
+        <div class="px-6 py-3 border-t border-gray-200 bg-gray-50 flex items-center justify-between shrink-0">
+          <span class="text-[11px] text-slate-400">按原数据顺序输出；启用“份数（数量）字段”时会输出所选行的全部份数。</span>
+          <div class="flex gap-2">
+            <button onclick="App.dataSource.resetPrintRows()" class="px-3 py-2 rounded-lg border border-gray-300 text-slate-600 text-xs font-medium hover:bg-white transition">恢复全部</button>
+            <button onclick="App.dataSource.closePrintRows()" class="px-4 py-2 rounded-lg border border-gray-300 text-slate-700 text-xs font-medium hover:bg-white transition">取消</button>
+            <button onclick="App.dataSource.applyPrintRows()" class="px-4 py-2 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 transition shadow-md shadow-red-100">应用</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <input type="file" id="projectImportInput" hidden accept=".paper" />
     <input type="file" id="templatePackImportInput" hidden accept=".paper,.paper-templates.json,application/json" multiple />
     <input type="file" id="imgUpload" hidden accept="image/*" />
@@ -1372,6 +1441,24 @@
             <input type="checkbox" id="checkOnlyCurrentPage" onchange="App.state.printCurrentOnly = this.checked" class="accent-red-600 rounded scale-90" />
             <span class="text-xs font-bold text-slate-600 whitespace-nowrap">仅当前页</span>
           </label>
+
+          <div class="h-6 w-px bg-slate-200 mx-1"></div>
+
+          <button
+            id="printRowsBtn"
+            onclick="App.dataSource.openPrintRows()"
+            class="hidden items-center gap-1.5 px-2.5 py-1.5 rounded-full border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition text-[11px] font-bold whitespace-nowrap"
+            title="选择要批量打印 / 导出的数据记录（行）">
+            <i class="ph ph-list-checks text-sm"></i>
+            <span id="printRowsBtnLabel">全部记录</span>
+          </button>
+          <button
+            id="printRowsClearBtn"
+            onclick="App.dataSource.resetPrintRows()"
+            class="hidden p-1.5 rounded-full text-slate-400 hover:text-red-600 hover:bg-slate-100 transition"
+            title="取消记录筛选，恢复打印全部记录">
+            <i class="ph ph-x text-sm"></i>
+          </button>
         </div>
 
         <div class="h-5 bg-white border-t border-gray-200 flex items-center justify-between px-3 text-gray-400 shrink-0 z-30 text-xs">
