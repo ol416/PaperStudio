@@ -7460,6 +7460,7 @@
               changeType: "increment",
               generateCount: hasDataSource ? 1 : 10,
               showTotal: false,
+              totalMode: "count",
               totalSeparator: "/",
             };
             this._addToCanvas(serialObj);
@@ -7490,7 +7491,15 @@
           _formatSerialNumber: function (config, index) {
             const serialNumber = this._calculateSerialNumber(config, index);
             if (!config.showTotal) return serialNumber;
-            return serialNumber + (config.totalSeparator || "/") + config.generateCount;
+            const total = this._serialTotalValue(config);
+            return serialNumber + (config.totalSeparator || "/") + total;
+          },
+
+          _serialTotalValue: function (config) {
+            if (config.totalMode === "endValue") {
+              return this._calculateSerialNumber(config, Math.max((config.generateCount || 1) - 1, 0));
+            }
+            return config.generateCount;
           },
 
           replaceActiveImage: function (input) {
@@ -9071,6 +9080,7 @@
                   changeType: "increment",
                   generateCount: 10,
                   showTotal: false,
+                  totalMode: "count",
                   totalSeparator: "/",
                 };
               }
@@ -9625,6 +9635,11 @@
                   if (sepWrapper) {
                     sepWrapper.classList.toggle("hidden", !cfg.showTotal);
                   }
+                  const modeWrapper = document.getElementById("serialTotalModeWrapper");
+                  if (modeWrapper) {
+                    modeWrapper.classList.toggle("hidden", !cfg.showTotal);
+                  }
+                  ui("serialTotalMode").val(cfg.totalMode || "count");
                   ui("serialTotalSeparator").val(cfg.totalSeparator || "/");
                   this.updateSerialTotalPreviewDemo(cfg);
                   this.updateSerialPreview(cfg);
@@ -9897,9 +9912,13 @@
               if (sepWrapper) {
                 sepWrapper.classList.toggle("hidden", !value);
               }
+              const modeWrapper = document.getElementById("serialTotalModeWrapper");
+              if (modeWrapper) {
+                modeWrapper.classList.toggle("hidden", !value);
+              }
               this.updateSerialTotalPreviewDemo(act.serialConfig);
             }
-            if (key === "totalSeparator") {
+            if (key === "totalSeparator" || key === "totalMode") {
               this.updateSerialTotalPreviewDemo(act.serialConfig);
             }
 

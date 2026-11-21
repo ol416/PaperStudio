@@ -2026,6 +2026,17 @@
                     <span class="text-[10px] text-slate-400">例如 1/10</span>
                   </div>
 
+                  <div id="serialTotalModeWrapper" class="hidden flex items-center gap-2 pt-1 border-t border-slate-200">
+                    <label for="serialTotalMode" class="text-[11px] text-slate-500 whitespace-nowrap">总数含义</label>
+                    <select
+                      id="serialTotalMode"
+                      class="flex-1 compact-input border rounded bg-white"
+                      onchange="App.ui.updateSerialConfig('totalMode', this.value)">
+                      <option value="count">生成页数（如 104/4 共 4 页）</option>
+                      <option value="endValue">序列末尾值（如 104/107）</option>
+                    </select>
+                  </div>
+
                   <div id="serialTotalSeparatorWrapper" class="hidden flex items-center gap-2 pt-1 border-t border-slate-200">
                     <label for="serialTotalSeparator" class="text-[11px] text-slate-500 whitespace-nowrap">分隔符</label>
                     <input
