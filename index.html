@@ -22,8 +22,8 @@
   </head>
 
   <body class="bg-gray-50 h-screen flex flex-col text-slate-700 font-sans overflow-hidden">
-    <div id="welcomeModal" class="fixed inset-0 z-50 flex items-center justify-center modal-backdrop transition-opacity duration-300">
-      <div class="bg-white w-[850px] h-[590px] rounded-2xl shadow-2xl flex overflow-hidden">
+    <dialog id="welcomeModal" class="paper-dialog" aria-label="欢迎使用 PaperStudio">
+      <div class="bg-white w-[850px] h-[590px] max-w-[95vw] max-h-[95dvh] rounded-2xl shadow-2xl flex overflow-hidden">
         <div class="w-1/3 bg-slate-900 text-white p-8 flex flex-col justify-between relative overflow-hidden">
           <div class="relative z-10">
             <div class="flex items-center gap-3 mb-8">
@@ -78,8 +78,8 @@
           <div id="templateGrid" class="grid grid-cols-2 gap-4 overflow-y-auto pr-2 custom-scrollbar"></div>
         </div>
       </div>
-    </div>
-    <div id="permissionModal" class="hidden fixed inset-0 z-[70] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+    </dialog>
+    <dialog id="permissionModal" class="paper-dialog" aria-label="权限提示">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[400px] text-center relative transform transition-all scale-100">
         <div class="w-14 h-14 bg-orange-50 text-orange-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-orange-100">
           <i class="ph ph-lock-key text-3xl"></i>
@@ -96,8 +96,8 @@
           </button>
         </div>
       </div>
-    </div>
-    <div id="sponsorModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+    </dialog>
+    <dialog id="sponsorModal" class="paper-dialog" aria-label="支持作者">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[320px] text-center relative transform transition-all scale-100">
         <button
           onclick="App.ui.hideModal('sponsorModal')"
@@ -119,8 +119,8 @@
           <p class="text-sm text-slate-400">欢迎请作者喝杯咖啡，激励持续更新</p>
         </div>
       </div>
-    </div>
-    <div id="pngExportModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+    </dialog>
+    <dialog id="pngExportModal" class="paper-dialog" aria-label="导出 PNG">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[400px] relative">
         <button
           onclick="App.ui.hideModal('pngExportModal')"
@@ -165,8 +165,8 @@
           </button>
         </div>
       </div>
-    </div>
-    <div id="findReplaceModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+    </dialog>
+    <dialog id="findReplaceModal" class="paper-dialog" aria-label="查找替换">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[560px] relative">
         <button
           onclick="App.findReplace.close()"
@@ -260,8 +260,8 @@
           </button>
         </div>
       </div>
-    </div>
-    <div id="helpModal" class="hidden fixed inset-0 z-[60] flex items-center justify-center modal-backdrop transition-opacity duration-200">
+    </dialog>
+    <dialog id="helpModal" class="paper-dialog" aria-label="帮助">
       <div class="bg-white rounded-xl shadow-2xl p-6 w-[520px] relative max-h-[85vh] flex flex-col">
         <button
           onclick="App.ui.hideModal('helpModal')"
@@ -320,8 +320,8 @@
           <button onclick="App.ui.hideModal('helpModal')" class="px-4 py-2 rounded-lg border border-gray-300 text-slate-600 hover:bg-gray-50 text-sm transition">关闭</button>
         </div>
       </div>
-    </div>
-    <div id="tableModal" class="hidden fixed inset-0 z-50 items-center justify-center modal-backdrop">
+    </dialog>
+    <dialog id="tableModal" class="paper-dialog" aria-label="插入表格">
       <div class="bg-white w-[98vw] h-[95vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 z-20 bg-white shadow-sm shrink-0">
           <div>
@@ -503,9 +503,9 @@
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
 
-    <div id="printRowsModal" class="hidden fixed inset-0 z-[70] items-center justify-center modal-backdrop">
+    <dialog id="printRowsModal" class="paper-dialog" aria-label="选择打印记录">
       <div class="bg-white w-[760px] max-w-[94vw] h-[82vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden">
         <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100 shrink-0 bg-white">
           <div>
@@ -572,7 +572,7 @@
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <input type="file" id="projectImportInput" hidden accept=".paper" />
     <input type="file" id="templatePackImportInput" hidden accept=".paper,.paper-templates.json,application/json" multiple />

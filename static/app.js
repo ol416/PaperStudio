@@ -4141,7 +4141,8 @@
           openPrintRows: function () {
             const s = App.state.dataSource;
             if (!s.isActive || s.data.length === 0) return Utils.toast("请先导入数据文件", "error");
-            this.closePrintRows();
+            // 直接复位，避免 close() 的异步 close 事件回调覆盖下面刚初始化的选择状态
+            this._resetPrintRowsState();
             const picked = this.getPrintRows();
             this._pickerRows = new Set(picked || s.data.map((_, i) => i));
             this._pickerFilter = "";
@@ -4152,23 +4153,19 @@
             if (from) from.value = 1;
             if (to) to.value = s.data.length;
             this.renderPrintRows();
-            const modal = document.getElementById("printRowsModal");
-            if (modal) {
-              modal.classList.remove("hidden");
-              modal.classList.add("flex");
-            }
+            App.ui.showModal("printRowsModal");
           },
 
-          closePrintRows: function () {
+          _resetPrintRowsState: function () {
             clearTimeout(this._pickerFilterTimer);
             this._pickerFilterTimer = null;
             this._pickerRows = null;
             this._pickerFilter = "";
-            const modal = document.getElementById("printRowsModal");
-            if (modal) {
-              modal.classList.add("hidden");
-              modal.classList.remove("flex");
-            }
+          },
+
+          closePrintRows: function () {
+            this._resetPrintRowsState();
+            App.ui.hideModal("printRowsModal");
           },
 
           filterPrintRows: function (value) {
@@ -6867,22 +6864,22 @@
             const bindModalClose = (id) => {
               const el = document.getElementById(id);
               if (el) {
-                el.onclick = (e) => {
-                  if (e.target.id === id) App.ui.hideModal(id);
-                };
+                el.addEventListener("click", (e) => {
+                  if (e.target === el) App.ui.hideModal(id);
+                });
               }
             };
             bindModalClose("welcomeModal");
-            bindModalClose("contactModal");
             bindModalClose("sponsorModal");
             bindModalClose("pngExportModal");
             bindModalClose("findReplaceModal");
-            const printRowsModal = document.getElementById("printRowsModal");
-            if (printRowsModal) {
-              printRowsModal.addEventListener("click", (e) => {
-                if (e.target === printRowsModal) App.dataSource.closePrintRows();
-              });
-            }
+            bindModalClose("helpModal");
+            bindModalClose("permissionModal");
+            bindModalClose("tableModal");
+            bindModalClose("printRowsModal");
+            // Esc / 背景点击 都走 close 事件，统一在这里做状态清理
+            document.getElementById("printRowsModal")?.addEventListener("close", () => App.dataSource._resetPrintRowsState());
+            document.getElementById("tableModal")?.addEventListener("close", () => App.tableEditor?._resetTableState?.());
             document.addEventListener("fullscreenchange", () => {
               const icon = document.getElementById("fsIcon");
               if (icon) {
@@ -6952,11 +6949,8 @@
               }
             });
             hotkeys("esc", (e) => {
-              if (!document.getElementById("printRowsModal")?.classList.contains("hidden")) {
-                e.preventDefault();
-                App.dataSource.closePrintRows();
-                return;
-              }
+              // 原生 dialog 自行处理 Esc（cancel + close 事件），这里不再重复处理
+              if (document.querySelector("dialog[open]")) return;
               if (App.formatPainter.isActive()) {
                 e.preventDefault();
                 App.formatPainter.exit();
@@ -8153,15 +8147,17 @@
             }
             this.updateInputs();
             this.renderGrid();
-            this.els.modal.classList.remove("hidden");
-            this.els.modal.classList.add("flex");
+            App.ui.showModal("tableModal");
+          },
+
+          _resetTableState: function () {
+            this.clearSelection();
+            this.state.editingTarget = null;
           },
 
           close: function () {
-            this.els.modal.classList.add("hidden");
-            this.els.modal.classList.remove("flex");
-            this.clearSelection();
-            this.state.editingTarget = null;
+            App.ui.hideModal("tableModal");
+            this._resetTableState();
           },
 
           resetData: function (rows, cols) {
@@ -10694,8 +10690,24 @@
           },
           hideLoading: () => document.getElementById("loadingOverlay")?.classList.add("hidden"),
           toggleFullScreen: () => (!document.fullscreenElement ? document.documentElement.requestFullscreen() : document.exitFullscreen()),
-          showModal: (id) => document.getElementById(id).classList.remove("hidden"),
-          hideModal: (id) => document.getElementById(id).classList.add("hidden"),
+          showModal: (id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el instanceof HTMLDialogElement) {
+              if (!el.open) el.showModal();
+              return;
+            }
+            el.classList.remove("hidden");
+          },
+          hideModal: (id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el instanceof HTMLDialogElement) {
+              if (el.open) el.close();
+              return;
+            }
+            el.classList.add("hidden");
+          },
           showHelp: () => App.ui.showModal("helpModal"),
 
           toggleExportMenu: function (e) {
@@ -13534,6 +13546,7 @@
       };
       window.onload = function () {
         App.init();
+        App.ui.showModal("welcomeModal");
         App.draft.ready = true;
         App.draft.checkDraft();
         App.recent.init();
